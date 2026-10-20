@@ -115,9 +115,11 @@ function tabsHtml(){
   const openEsc=S.escapes.filter(e=>!e.done).length,openHo=S.handover.filter(h=>!h.done).length;
   return ROLES[role].tabs.map(([k,l])=>`<button role="tab" data-view="${k}" aria-selected="${k===view}">${esc(l)}${k==='escapes'&&openEsc?`<span class="n">${openEsc}</span>`:''}${k==='handover'&&openHo?`<span class="n">${openHo}</span>`:''}</button>`).join('');
 }
-let pending=false;
-function schedule(){const a=document.activeElement;if(a&&$('view').contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName)&&a.type!=='checkbox'){pending=true;return}render()}
-document.addEventListener('focusout',()=>{if(pending)setTimeout(()=>{const a=document.activeElement;if(!(a&&$('view').contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName)&&a.type!=='checkbox')){pending=false;render()}},60)});
+let pending=false,ptr=false;
+document.addEventListener('pointerdown',()=>{ptr=true},true);
+document.addEventListener('pointerup',()=>setTimeout(()=>{ptr=false;if(pending){const a=document.activeElement;if(!(a&&$('view').contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName)&&a.type!=='checkbox')){pending=false;render()}}},80),true);
+function schedule(){if(ptr){pending=true;return}const a=document.activeElement;if(a&&$('view').contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName)&&a.type!=='checkbox'){pending=true;return}render()}
+document.addEventListener('focusout',()=>{if(pending)setTimeout(()=>{if(ptr)return;const a=document.activeElement;if(!(a&&$('view').contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName)&&a.type!=='checkbox')){pending=false;render()}},60)});
 function render(){
   document.body.className='role-'+role;
   $('roleSel').value=role;
@@ -326,27 +328,47 @@ function deptQueue(kind){
 const vMat=()=>deptQueue('parts');
 const vTool=()=>deptQueue('tools');
 
+function hm(t){return t?new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):''}
+function dur(a,b){if(!a)return '';const m=Math.max(0,Math.round(((b?new Date(b):new Date())-new Date(a))/60000));return m<60?m+' min':Math.floor(m/60)+'h '+String(m%60).padStart(2,'0')+'m'}
 function vFloor(){
   const P=openPacks();if(!P.length)return '<div class="empty">No open work packs.</div>';
   const inWork=P.filter(p=>p.status==='In work');
   const p=packById(curPack)&&packById(curPack).status!=='Closed'?packById(curPack):(inWork[0]||P[0]);curPack=p.id;
-  const W=toWork(p).sort((a,b)=>(a.progress==='Complete')-(b.progress==='Complete')||a.no.localeCompare(b.no)),g=progress(p);
-  const act={Mech:0,B1:0,B2:0},pl={Mech:0,B1:0,B2:0};W.filter(w=>w.progress==='Complete').forEach(w=>TRADES.forEach(t=>{pl[t]+=Number(w.hrs?.[t])||0;act[t]+=Number(w.actual?.[t]??w.hrs?.[t])||0}));
   const ed=p.status==='In work';
-  return `<section class="card"><div class="row spread"><div><h2>Shift board — ${esc(p.ac)} · ${esc(p.check_type)} <span class="status ${p.status.replace(' ','-')}">${esc(p.status)}</span></h2><p class="sub" style="margin:0">Accepted work orders only. Assign, update progress, and record actual hours as jobs finish.</p></div>${packSelect(P,p.id)}</div>
-  ${!ed?'<p class="warnbar" style="margin:10px 0 0">This work pack hasn\'t been released to production yet. You can view it, but progress opens once the planner releases it.</p>':''}
+  const order={'In progress':0,'Not started':1,'Passed back':2,'Complete':3};
+  const W=toWork(p).sort((a,b)=>order[a.progress]-order[b.progress]||a.no.localeCompare(b.no));
+  const n=k=>W.filter(w=>w.progress===k).length, g=progress(p);
+  const remain={Mech:0,B1:0,B2:0};W.filter(w=>w.progress==='Not started'||w.progress==='In progress').forEach(w=>TRADES.forEach(t=>remain[t]+=Number(w.hrs?.[t])||0));
+  const r=roster(),we=[0,6].includes(new Date().getDay()),heads=we?r.weekend:r.weekday;
+  const people=new Set(W.filter(w=>w.progress==='In progress'&&w.assignee).flatMap(w=>w.assignee.split(/[,/&]+/).map(x=>x.trim().toUpperCase()).filter(Boolean)));
+  const act={Mech:0,B1:0,B2:0},pl={Mech:0,B1:0,B2:0};W.filter(w=>w.progress==='Complete').forEach(w=>TRADES.forEach(t=>{pl[t]+=Number(w.hrs?.[t])||0;act[t]+=Number(w.actual?.[t]??w.hrs?.[t])||0}));
+  const btn=w=>{if(!ed)return '';
+    if(w.progress==='Not started')return `<button class="primary" data-start="${esc(w.no)}">Start</button>`;
+    if(w.progress==='In progress')return `<button class="primary" data-done="${esc(w.no)}" style="background:var(--ok);border-color:var(--ok)">Complete</button> <button class="link" data-pb="${esc(w.no)}">Pass back</button>`;
+    return `<button class="link" data-reopen="${esc(w.no)}">Reopen</button>`};
+  const when=w=>w.progress==='In progress'?`Started ${hm(w.started_at)} · ${dur(w.started_at)}`:w.progress==='Complete'?`Done ${hm(w.completed_at)}${w.started_at?' · took '+dur(w.started_at,w.completed_at):''}`:w.progress==='Passed back'?'Passed back to the line':'';
+  return `<section class="card"><div class="row spread"><div><h2>Shift board — ${esc(p.ac)} · ${esc(p.check_type)} <span class="status ${p.status.replace(' ','-')}">${esc(p.status)}</span></h2><p class="sub" style="margin:0">Allocate people, press Start when a job begins and Complete when it's finished. The planner and management see it straight away.</p></div>${packSelect(P,p.id)}</div>
+  ${!ed?'<p class="warnbar" style="margin:10px 0 0">This work pack hasn\'t been released to production yet. Jobs can be started once the planner releases it.</p>':''}
   <div style="margin-top:12px"><span class="label">Complete ${g.done}/${g.total}</span>${meter(g.pct,false)}</div></section>
-  <div class="strip">${TRADES.map(t=>{const v=pl[t]?Math.round((act[t]-pl[t])/pl[t]*100):0;return `<div class="tile"><span class="label">${t} on completed jobs</span><span class="big">${fmt(act[t])} h</span><span class="meta">planned ${fmt(pl[t])} h ${pl[t]?`· <span class="tag ${Math.abs(v)<=5?'ok':v>0?'bad':'acc'}">${v>0?'+':''}${v}%</span>`:''}</span></div>`}).join('')}</div>
-  <section class="card"><div class="tablewrap"><table><thead><tr><th>WO</th><th>Task</th><th>Planner note</th><th>Ready</th><th>Assigned</th><th>Progress</th>${TRADES.map(t=>`<th class="num">${t} actual</th>`).join('')}<th></th></tr></thead><tbody>
-  ${W.map(w=>`<tr class="${w.progress==='Complete'?'done':''}"><td class="mono">${esc(w.no)}${w.decision==='G703'?' <span class="tag warn">G703</span>':''}</td>
-    <td>${esc(w.title)}<div class="tags" style="margin-top:3px">${FLAGS.filter(([k])=>w.flags?.[k]).map(([,l])=>`<span class="tag ${l==='Dup insp'?'warn':''}">${l}</span>`).join('')}</div></td>
-    <td style="font-size:13px">${esc(w.comment)}</td>
+  <div class="strip">
+    <div class="tile"><span class="label">Not started</span><span class="big">${n('Not started')}</span></div>
+    <div class="tile ${n('In progress')?'warn':''}"><span class="label">In progress</span><span class="big" style="color:var(--warn)">${n('In progress')}</span><span class="meta">${people.size} ${people.size===1?'person':'people'} allocated</span></div>
+    <div class="tile"><span class="label">Complete</span><span class="big" style="color:var(--ok)">${n('Complete')}</span><span class="meta">${n('Passed back')} passed back</span></div>
+    <div class="tile"><span class="label">Hours left vs manpower today</span><div class="hrs">${TRADES.map(t=>{const av=(Number(heads[t])||0)*Number(r.prod);const over=remain[t]>av;return `<div><span class="label">${t}</span><b style="color:${over?'var(--bad)':'var(--fg)'}">${fmt(remain[t])}</b><span class="label">of ${fmt(av)} h</span></div>`}).join('')}</div></div>
+  </div>
+  <section class="card"><div class="tablewrap"><table><thead><tr><th>Job</th><th>Planner note</th><th>Ready</th><th>Allocated to</th><th>Status</th>${TRADES.map(t=>`<th class="num">${t} actual</th>`).join('')}<th></th></tr></thead><tbody>
+  ${W.map(w=>`<tr class="${w.progress==='Complete'?'done':''}">
+    <td><b>${esc(w.title)}</b><div class="mono" style="font-size:11px;color:var(--muted)">${esc(w.no)} · ${TRADES.filter(t=>w.hrs?.[t]).map(t=>t+' '+fmt(w.hrs[t])+'h').join(' · ')}</div>
+      <div class="tags" style="margin-top:3px">${w.decision==='G703'?'<span class="tag warn">G703</span>':''}${FLAGS.filter(([k])=>w.flags?.[k]).map(([,l])=>`<span class="tag ${l==='Dup insp'?'warn':''}">${l}</span>`).join('')}</div></td>
+    <td style="font-size:13px;max-width:220px">${esc(w.comment)}</td>
     <td><div class="tags">${(w.parts||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[spareSt(w)]}">Parts</span>`:''}${(w.tools||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[toolSt(w)]}">Tools</span>`:''}</div></td>
-    <td><input type="text" value="${esc(w.assignee)}" data-asg="${esc(w.no)}" placeholder="Slot / initials" size="8" ${ed?'':'disabled'} aria-label="Assigned to"></td>
-    <td><select data-prog="${esc(w.no)}" ${ed?'':'disabled'} aria-label="Progress">${PROG.map(s=>`<option${s===w.progress?' selected':''}>${s}</option>`).join('')}</select></td>
-    ${TRADES.map(t=>`<td class="num">${w.hrs?.[t]?`<input type="number" step="0.25" min="0" value="${w.actual?.[t]??''}" placeholder="${fmt(w.hrs[t])}" data-act="${esc(w.no)}|${t}" ${ed?'':'disabled'} aria-label="${t} actual hours">`:'–'}</td>`).join('')}
-    <td><button class="link" data-escfor="${esc(w.no)}">Escape</button></td></tr>`).join('')||`<tr><td colspan="${7+TRADES.length}"><div class="empty">No accepted work orders yet.</div></td></tr>`}
-  </tbody></table></div></section>${feed(p.id)}`;
+    <td><input type="text" value="${esc(w.assignee)}" data-asg="${esc(w.no)}" placeholder="e.g. M-02, B1-01" size="12" ${ed?'':'disabled'} aria-label="Allocated to"></td>
+    <td><span class="tag ${w.progress==='Complete'?'ok':w.progress==='In progress'?'warn':w.progress==='Passed back'?'bad':''}">${esc(w.progress)}</span><div class="mono" style="font-size:11px;color:var(--muted);margin-top:3px">${when(w)}</div></td>
+    ${TRADES.map(t=>`<td class="num">${w.hrs?.[t]?`<input type="number" step="0.25" min="0" value="${w.actual?.[t]??''}" placeholder="${fmt(w.hrs[t])}" data-act="${esc(w.no)}|${t}" ${ed&&w.progress!=='Not started'?'':'disabled'} aria-label="${t} actual hours">`:'–'}</td>`).join('')}
+    <td style="white-space:nowrap">${btn(w)} <button class="link" data-escfor="${esc(w.no)}">Escape</button></td></tr>`).join('')||`<tr><td colspan="${6+TRADES.length}"><div class="empty">No accepted work orders yet.</div></td></tr>`}
+  </tbody></table></div></section>
+  <div class="strip">${TRADES.map(t=>{const v=pl[t]?Math.round((act[t]-pl[t])/pl[t]*100):0;return `<div class="tile"><span class="label">${t} hours on completed jobs</span><span class="big">${fmt(act[t])} h</span><span class="meta">planned ${fmt(pl[t])} h ${pl[t]?`· <span class="tag ${Math.abs(v)<=5?'ok':v>0?'bad':'acc'}">${v>0?'+':''}${v}%</span>`:''}</span></div>`}).join('')}</div>
+  ${feed(p.id)}`;
 }
 
 /* ---------- trends ---------- */
@@ -450,6 +472,11 @@ function wire(){
     else if(t.id==='release'){const p=packById(curPack);await upd('packs',p.id,{status:'In work'},`Released ${p.id} to production`,p.id);toast('Released — the shift lead can now book progress')}
     else if(t.id==='closePack'){const p=packById(curPack);if(t.dataset.armed){await closePack(p)}else{t.dataset.armed=1;t.textContent='Click again to confirm';setTimeout(()=>{if(t.isConnected){delete t.dataset.armed;t.textContent='Close work pack'}},3000)}}
     else if(d.rmwo){const w=woBy(d.rmwo),p=packById(w.pack_id);await upd('work_orders',w.no,{removed_v:p.version},`Removed ${w.no} (${w.title}) in v${p.version}`,p.id)}
+    else if(d.start){const w=woBy(d.start);if(!w.assignee){const el=document.querySelector(`[data-asg="${w.no}"]`);if(el&&el.value.trim()){await upd('work_orders',w.no,{assignee:el.value.trim()})}else{toast('Allocate someone first');el&&el.focus();return}}
+      await upd('work_orders',w.no,{progress:'In progress',started_at:new Date().toISOString(),completed_at:null},`Started: ${w.title}${w.assignee?' ('+w.assignee+')':''}`,w.pack_id)}
+    else if(d.done){const w=woBy(d.done);await upd('work_orders',w.no,{progress:'Complete',completed_at:new Date().toISOString()},`Completed: ${w.title}${w.started_at?' in '+dur(w.started_at):''}`,w.pack_id);toast('Complete — add actual hours if different from plan')}
+    else if(d.pb){const w=woBy(d.pb);await upd('work_orders',w.no,{progress:'Passed back',completed_at:null},`Passed back to the line: ${w.title}`,w.pack_id)}
+    else if(d.reopen){const w=woBy(d.reopen);await upd('work_orders',w.no,{progress:'In progress',completed_at:null},`Reopened: ${w.title}`,w.pack_id)}
     else if(d.escfor){const w=woBy(d.escfor);escPrefill={pack:w.pack_id,ref:w.ref,detail:w.no+': '};go('escapes')}
   });
   V.addEventListener('change',async e=>{
