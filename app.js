@@ -109,11 +109,13 @@ function spareSt(w){const L=w.parts||[];if(!L.length)return 'none';
 const openLines=()=>S.work_orders.filter(w=>{const p=packById(w.pack_id);return p&&p.status!=='Closed'&&w.decision!=='Rejected'&&!(w.removed_v&&w.removed_v<=p.version)}).flatMap(w=>(w.parts||[]).map((l,i)=>({w,l,i,...partInfo(w,l)})));
 const openRequests=()=>openLines().filter(x=>x.st==='Requested');
 let xspPrefill=null;
-function extraForm(W,packId){
+function extraForm(W,packId,packs){
+  const multi=packs&&packs.length>1;
   return `<section class="card" id="extraCard"><h3>Request extra spares</h3><p class="sub">Raise extras against a work order in this work pack. If the defect isn't on a work order yet, enter its new work order number and it's added to the pack as an ADF for the planner to accept.</p>
   <form class="form" id="extraForm" data-pack="${esc(packId)}" style="margin-top:0">
-    <label><span class="label">Work order</span><select name="wo">${W.map(w=>`<option value="${esc(w.no)}"${xspPrefill===w.no?' selected':''}>${esc(w.no)} — ${esc(w.title)}</option>`).join('')}<option value="__new"${!W.length?' selected':''}>+ New work order (not in the pack yet)</option></select></label>
+    <label><span class="label">Work order</span><select name="wo">${multi?packs.map(pk=>{const ws=W.filter(w=>w.pack_id===pk.id);return ws.length?`<optgroup label="${esc(pk.ac)} · ${esc(pk.id)}">${ws.map(w=>`<option value="${esc(w.no)}"${xspPrefill===w.no?' selected':''}>${esc(w.no)} — ${esc(w.title)}</option>`).join('')}</optgroup>`:''}).join(''):W.map(w=>`<option value="${esc(w.no)}"${xspPrefill===w.no?' selected':''}>${esc(w.no)} — ${esc(w.title)}</option>`).join('')}<option value="__new"${!W.length?' selected':''}>+ New work order (not in the pack yet)</option></select></label>
     <div class="wide form" id="newWoFields" style="margin:0;padding:10px;border:1px dashed var(--line);border-radius:6px" ${W.length?'hidden':''}>
+      ${multi?`<label><span class="label">Aircraft / work pack</span><select name="xpack">${packs.map(x=>`<option value="${esc(x.id)}">${esc(x.ac)} · ${esc(x.id)}</option>`).join('')}</select></label>`:''}
       <label><span class="label">New work order number</span><input type="text" name="woNew" placeholder="e.g. WO-480200" autocomplete="off"></label>
       <label style="grid-column:span 2"><span class="label">Defect / task description</span><input type="text" name="woDesc" placeholder="e.g. Hydraulic seep at LH flap actuator"></label>
     </div>
@@ -292,15 +294,16 @@ function applyNewFilter(){
   $('newCount').textContent=`${shown.length} match${shown.length===1?'':'es'}${shown.length>LIM?` · showing first ${LIM}, refine the search`:''}`;
 }
 const floorFields=()=>role==='shiftlead'?{decision:'Accepted',comment:`Added on the floor by Shift lead${actor()?' ('+actor()+')':''}`}:{};
-function addWoSection(p){
+function addWoSection(p,packs){
+  const pkSel=packs&&packs.length>1?`<label><span class="label">Aircraft / work pack</span><select name="pack">${packs.map(x=>`<option value="${esc(x.id)}">${esc(x.ac)} · ${esc(x.id)}</option>`).join('')}</select></label>`:'';
   const floor=role==='shiftlead';
   return `<section class="card"><h3>Add work order${floor?'':' to v'+p.version}</h3>${floor?'<p class="sub">For work found on the floor. It goes straight onto this board as accepted, marked as added by the shift lead so the planner can see it.</p>':''}
-    <form class="form" id="addWoTask" style="margin-top:0">
+    <form class="form" id="addWoTask" style="margin-top:0">${pkSel}
       <label style="grid-column:span 2"><span class="label">From the task database (type to search ${S.tasks.length} tasks)</span><input type="text" name="task" list="taskOpts" placeholder="e.g. MLG brake, OMP-32, DEMO-32A" autocomplete="off"><datalist id="taskOpts">${S.tasks.map(t=>`<option value="${esc(t.ref)} — ${esc(t.title)}"></option>`).join('')}</datalist></label>
       <label><span class="label">Work order number</span><input type="text" name="woNo" placeholder="blank = auto" autocomplete="off"></label>
       <div><button class="primary" type="submit">Add task</button></div></form>
     <h3 style="margin-top:18px">Or add a manual work order</h3><p class="sub">Tools and spares entered here go straight to Tooling and Materials.</p>
-    <form class="form" id="addWoManual" style="margin-top:0">${manualFields(p.start_date)}<div><button class="primary" type="submit">Add manual work order</button></div></form></section>`;
+    <form class="form" id="addWoManual" style="margin-top:0">${pkSel}${manualFields(p.start_date)}<div><button class="primary" type="submit">Add manual work order</button></div></form></section>`;
 }
 function vPack(){
   const P=S.packs.slice().sort((a,b)=>(a.status==='Closed')-(b.status==='Closed')||a.start_date.localeCompare(b.start_date));
@@ -498,19 +501,33 @@ function workedMin(w){const base=Number(w.worked_min)||0,rf=runFrom(w);return ba
 function pausedMin(w){return (w.pause_log||[]).reduce((a,p)=>a+Math.max(0,((p.to?new Date(p.to):new Date())-new Date(p.from))/60000),0)}
 const fmtMin=m=>{m=Math.round(m);return m<60?m+' min':Math.floor(m/60)+'h '+String(m%60).padStart(2,'0')+'m'};
 const isPaused=w=>w.progress==='In progress'&&!!w.paused_at;
+let floorSel=new Set();
+function floorPacks(){const P=openPacks(),inWork=P.filter(p=>p.status==='In work');
+  const sel=[...floorSel].map(packById).filter(p=>p&&p.status!=='Closed');
+  return {P,inWork,shown:sel.length?sel:(inWork.length?inWork:P.slice(0,1))}}
+function feedMulti(ids){const A=S.activity.filter(a=>ids.includes(a.pack_id)).slice(0,25);
+  return `<section class="card"><h3>Activity</h3>${A.length?`<div class="feed">${A.map(a=>`<div><span class="when">${ago(a.t)}</span><span>${esc(a.text)}</span><span class="by">${esc(ROLES[a.role]?.name||a.role||'')}${a.actor?' · '+esc(a.actor):''}${a.pack_id&&packById(a.pack_id)?' · '+esc(packById(a.pack_id).ac):''}</span></div>`).join('')}</div>`:'<div class="empty">Nothing yet.</div>'}</section>`}
 function vFloor(){
-  const P=openPacks();if(!P.length)return '<div class="empty">No open work packs.</div>';
-  const inWork=P.filter(p=>p.status==='In work');
-  const p=packById(curPack)&&packById(curPack).status!=='Closed'?packById(curPack):(inWork[0]||P[0]);curPack=p.id;
-  const ed=p.status==='In work';
+  const {P,inWork,shown}=floorPacks();if(!P.length)return '<div class="empty">No open work packs.</div>';
+  const ids=shown.map(p=>p.id),all=!floorSel.size;
   const order={'In progress':0,'Not started':1,'Passed back':2,'Complete':3};
-  const W=toWork(p).sort((a,b)=>order[a.progress]-order[b.progress]||a.no.localeCompare(b.no));
-  const n=k=>W.filter(w=>w.progress===k).length, g=progress(p), pausedN=W.filter(isPaused).length, running=n('In progress')-pausedN;
-  const remain={Mech:0,B1:0,B2:0};W.filter(w=>w.progress==='Not started'||w.progress==='In progress').forEach(w=>TRADES.forEach(t=>remain[t]+=Number(w.hrs?.[t])||0));
+  const W=shown.flatMap(p=>toWork(p).map(w=>({w,p,ed:p.status==='In work'})));
+  const n=k=>W.filter(x=>x.w.progress===k).length, pausedN=W.filter(x=>isPaused(x.w)).length, running=n('In progress')-pausedN;
+  const remain={Mech:0,B1:0,B2:0};W.filter(x=>x.w.progress==='Not started'||x.w.progress==='In progress').forEach(x=>TRADES.forEach(t=>remain[t]+=Number(x.w.hrs?.[t])||0));
   const r=roster(),we=[0,6].includes(new Date().getDay()),heads=we?r.weekend:r.weekday;
-  const people=new Set(W.filter(w=>w.progress==='In progress'&&!w.paused_at&&w.assignee).flatMap(w=>w.assignee.split(/[,/&]+/).map(x=>x.trim().toUpperCase()).filter(Boolean)));
-  const act={Mech:0,B1:0,B2:0},pl={Mech:0,B1:0,B2:0};W.filter(w=>w.progress==='Complete').forEach(w=>TRADES.forEach(t=>{pl[t]+=Number(w.hrs?.[t])||0;act[t]+=Number(w.actual?.[t]??w.hrs?.[t])||0}));
-  const btn=w=>{if(!ed)return '';
+  const people=new Set(W.filter(x=>x.w.progress==='In progress'&&!x.w.paused_at&&x.w.assignee).flatMap(x=>x.w.assignee.split(/[,/&]+/).map(y=>y.trim().toUpperCase()).filter(Boolean)));
+  const act={Mech:0,B1:0,B2:0},pl={Mech:0,B1:0,B2:0};W.filter(x=>x.w.progress==='Complete').forEach(x=>TRADES.forEach(t=>{pl[t]+=Number(x.w.hrs?.[t])||0;act[t]+=Number(x.w.actual?.[t]??x.w.hrs?.[t])||0}));
+  // aircraft cards
+  const card=p=>{const T=toWork(p),g=progress(p),pz=T.filter(isPaused).length,run=T.filter(w=>w.progress==='In progress').length-pz;
+    const aog=T.flatMap(w=>(w.parts||[]).map(l=>partInfo(w,l))).filter(i=>i.urg==='AOG'&&i.st!=='Delivered').length;
+    const spIss=T.filter(w=>w.progress!=='Complete'&&spareSt(w)==='bad').length,tlIss=T.filter(w=>w.progress!=='Complete'&&toolSt(w)==='bad').length;
+    const on=ids.includes(p.id)&&!all;
+    return `<button class="pack accard${on?' on':''}" data-floorpk="${esc(p.id)}" style="text-align:left;cursor:pointer;${on?'border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)':''}">
+      <div class="ttl"><b>${esc(p.ac)}</b><span class="status ${p.status.replace(' ','-')}">${esc(p.status)}</span></div>
+      <span class="label">${esc(p.check_type)} · ${esc(p.id)}</span>
+      ${meter(g.pct,false)}
+      <div class="tags">${run?`<span class="tag warn">${run} running</span>`:''}${pz?`<span class="tag bad">${pz} paused</span>`:''}<span class="tag ok">${g.done}/${g.total} done</span>${aog?`<span class="tag bad">${aog} AOG</span>`:''}${spIss?`<span class="tag bad">${spIss} spares</span>`:''}${tlIss?`<span class="tag bad">${tlIss} tooling</span>`:''}</div></button>`};
+  const btn=(w,ed)=>{if(!ed)return '';
     if(w.progress==='Not started')return `<button class="primary" data-start="${esc(w.no)}">Start</button>`;
     if(isPaused(w))return `<button class="primary" data-resume="${esc(w.no)}">Resume</button>`;
     if(w.progress==='In progress')return `<button class="primary" data-done="${esc(w.no)}" style="background:var(--ok);border-color:var(--ok)">Complete</button>
@@ -522,31 +539,34 @@ function vFloor(){
     if(w.progress==='In progress')return `Started ${hm(w.started_at)} · working ${fmtMin(workedMin(w))}${pm?'<br>paused '+fmtMin(pm)+' so far':''}`;
     if(w.progress==='Complete')return `Done ${hm(w.completed_at)} · ${fmtMin(workedMin(w))} working${pm?'<br>paused '+fmtMin(pm):''}`;
     return w.progress==='Passed back'?'Passed back to the line':''};
-  return `<section class="card"><div class="row spread"><div><h2>Shift board — ${esc(p.ac)} · ${esc(p.check_type)} <span class="status ${p.status.replace(' ','-')}">${esc(p.status)}</span></h2><p class="sub" style="margin:0">Allocate people, press Start when a job begins and Complete when it's finished. The planner and management see it straight away.</p></div>${packSelect(P,p.id)}</div>
-  ${!ed?'<p class="warnbar" style="margin:10px 0 0">This work pack hasn\'t been released to production yet. Jobs can be started once the planner releases it.</p>':''}
-  <div style="margin-top:12px"><span class="label">Complete ${g.done}/${g.total}</span>${meter(g.pct,false)}</div></section>
+  const row=({w,p,ed})=>`<tr class="${w.progress==='Complete'?'done':''}">
+    <td><b>${esc(w.title)}</b><div class="mono" style="font-size:11px;color:var(--muted)">${esc(w.no)} · ${TRADES.filter(t=>w.hrs?.[t]).map(t=>t+' '+fmt(w.hrs[t])+'h').join(' · ')}</div>
+      <div class="tags" style="margin-top:3px">${w.decision==='G703'?'<span class="tag warn">G703</span>':''}${/^Added on the floor/.test(w.comment||'')?'<span class="tag acc">floor</span>':''}${FLAGS.filter(([k])=>w.flags?.[k]).map(([,l])=>`<span class="tag ${l==='Dup insp'?'warn':''}">${l}</span>`).join('')}</div></td>
+    <td style="font-size:13px;max-width:220px">${/^Added on the floor/.test(w.comment||'')?'':esc(w.comment)}</td>
+    <td><div class="tags">${(w.parts||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[spareSt(w)]}" data-tip="${esc(partsTip(w))}">Parts ${(w.parts||[]).filter(l=>normSt(l.stock)==='Delivered').length}/${w.parts.length}</span>`:''}${(w.tools||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[toolSt(w)]}">Tools</span>`:''}</div></td>
+    <td><input type="text" value="${esc(w.assignee)}" data-asg="${esc(w.no)}" placeholder="e.g. M-02, B1-01" size="12" ${ed?'':'disabled'} aria-label="Allocated to"></td>
+    <td><span class="tag ${isPaused(w)?'bad':w.progress==='Complete'?'ok':w.progress==='In progress'?'warn':w.progress==='Passed back'?'bad':''}">${isPaused(w)?'Paused':esc(w.progress)}</span><div class="mono" style="font-size:11px;color:var(--muted);margin-top:3px">${when(w)}</div><div class="row" style="margin-top:6px;gap:6px">${btn(w,ed)}</div></td>
+    ${TRADES.map(t=>`<td class="num">${w.hrs?.[t]?`<input type="number" step="0.25" min="0" value="${w.actual?.[t]??''}" placeholder="${fmt(w.hrs[t])}" data-act="${esc(w.no)}|${t}" ${ed&&w.progress!=='Not started'?'':'disabled'} aria-label="${t} actual hours">`:'–'}</td>`).join('')}
+    <td style="white-space:nowrap">${ed&&w.progress!=='Complete'?`<button class="link" data-xsp="${esc(w.no)}">+ Spares</button><br>`:''}<button class="link" data-escfor="${esc(w.no)}">Escape</button></td></tr>`;
+  const groups=shown.map(p=>{const rows=W.filter(x=>x.p===p).sort((a,b)=>order[a.w.progress]-order[b.w.progress]-(isPaused(a.w)?0.5:0)+(isPaused(b.w)?0.5:0)||a.w.no.localeCompare(b.w.no));const g=progress(p);
+    return `<tr class="grouphead"><td colspan="${6+TRADES.length}"><span class="row" style="gap:10px"><b style="font-family:var(--display);font-size:18px">${esc(p.ac)}</b><span class="label">${esc(p.check_type)} · ${esc(p.id)}</span><span class="status ${p.status.replace(' ','-')}">${esc(p.status)}</span><span class="label">${g.done}/${g.total} complete</span>${p.status!=='In work'?'<span class="label" style="color:var(--warn)">not released yet: view only</span>':''}</span></td></tr>`+
+      (rows.map(row).join('')||`<tr><td colspan="${6+TRADES.length}"><div class="empty">No accepted work orders yet.</div></td></tr>`)}).join('');
+  const openW=W.filter(x=>x.w.progress!=='Complete').map(x=>x.w);
+  return `<section class="card"><div class="row spread"><div><h2>Shift board</h2><p class="sub" style="margin:0">Every aircraft in work. Tap an aircraft to focus on it, or see them all. Allocate people, then Start, Pause and Complete jobs.</p></div>
+    <button class="${all?'primary':''}" data-floorall="1">All aircraft in work</button></div>
+    <div class="packs" style="margin-top:12px;grid-template-columns:repeat(auto-fill,minmax(min(100%,240px),1fr))">${inWork.map(card).join('')}${P.filter(p=>p.status!=='In work').map(p=>card(p)).join('')}</div></section>
   <div class="strip">
-    <div class="tile"><span class="label">Not started</span><span class="big">${n('Not started')}</span></div>
+    <div class="tile"><span class="label">Not started</span><span class="big">${n('Not started')}</span><span class="meta">${shown.length} aircraft in view</span></div>
     <div class="tile ${running?'warn':''}"><span class="label">In progress</span><span class="big" style="color:var(--warn)">${running}</span><span class="meta">${people.size} ${people.size===1?'person':'people'} allocated</span></div>
-    <div class="tile ${pausedN?'bad':''}"><span class="label">Paused</span><span class="big" style="color:var(--bad)">${pausedN}</span><span class="meta">${pausedN?esc([...new Set(W.filter(isPaused).map(w=>w.pause_reason))].join(', ')):'none'}</span></div>
+    <div class="tile ${pausedN?'bad':''}"><span class="label">Paused</span><span class="big" style="color:var(--bad)">${pausedN}</span><span class="meta">${pausedN?esc([...new Set(W.filter(x=>isPaused(x.w)).map(x=>x.w.pause_reason))].join(', ')):'none'}</span></div>
     <div class="tile"><span class="label">Complete</span><span class="big" style="color:var(--ok)">${n('Complete')}</span><span class="meta">${n('Passed back')} passed back</span></div>
     <div class="tile"><span class="label">Hours left vs manpower today</span><div class="hrs">${TRADES.map(t=>{const av=(Number(heads[t])||0)*Number(r.prod);const over=remain[t]>av;return `<div><span class="label">${t}</span><b style="color:${over?'var(--bad)':'var(--fg)'}">${fmt(remain[t])}</b><span class="label">of ${fmt(av)} h</span></div>`}).join('')}</div></div>
   </div>
-  <section class="card"><div class="tablewrap"><table><thead><tr><th>Job</th><th>Planner note</th><th>Ready</th><th>Allocated to</th><th>Status</th>${TRADES.map(t=>`<th class="num">${t} actual</th>`).join('')}<th></th></tr></thead><tbody>
-  ${W.map(w=>`<tr class="${w.progress==='Complete'?'done':''}">
-    <td><b>${esc(w.title)}</b><div class="mono" style="font-size:11px;color:var(--muted)">${esc(w.no)} · ${TRADES.filter(t=>w.hrs?.[t]).map(t=>t+' '+fmt(w.hrs[t])+'h').join(' · ')}</div>
-      <div class="tags" style="margin-top:3px">${w.decision==='G703'?'<span class="tag warn">G703</span>':''}${FLAGS.filter(([k])=>w.flags?.[k]).map(([,l])=>`<span class="tag ${l==='Dup insp'?'warn':''}">${l}</span>`).join('')}</div></td>
-    <td style="font-size:13px;max-width:220px">${esc(w.comment)}</td>
-    <td><div class="tags">${(w.parts||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[spareSt(w)]}" data-tip="${esc(partsTip(w))}">Parts ${(w.parts||[]).filter(l=>normSt(l.stock)==='Delivered').length}/${w.parts.length}</span>`:''}${(w.tools||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[toolSt(w)]}">Tools</span>`:''}</div></td>
-    <td><input type="text" value="${esc(w.assignee)}" data-asg="${esc(w.no)}" placeholder="e.g. M-02, B1-01" size="12" ${ed?'':'disabled'} aria-label="Allocated to"></td>
-    <td><span class="tag ${isPaused(w)?'bad':w.progress==='Complete'?'ok':w.progress==='In progress'?'warn':w.progress==='Passed back'?'bad':''}">${isPaused(w)?'Paused':esc(w.progress)}</span><div class="mono" style="font-size:11px;color:var(--muted);margin-top:3px">${when(w)}</div><div class="row" style="margin-top:6px;gap:6px">${btn(w)}</div></td>
-    ${TRADES.map(t=>`<td class="num">${w.hrs?.[t]?`<input type="number" step="0.25" min="0" value="${w.actual?.[t]??''}" placeholder="${fmt(w.hrs[t])}" data-act="${esc(w.no)}|${t}" ${ed&&w.progress!=='Not started'?'':'disabled'} aria-label="${t} actual hours">`:'–'}</td>`).join('')}
-    <td style="white-space:nowrap">${ed&&w.progress!=='Complete'?`<button class="link" data-xsp="${esc(w.no)}">+ Spares</button><br>`:''}<button class="link" data-escfor="${esc(w.no)}">Escape</button></td></tr>`).join('')||`<tr><td colspan="${6+TRADES.length}"><div class="empty">No accepted work orders yet.</div></td></tr>`}
-  </tbody></table></div></section>
-  ${p.status!=='Closed'?addWoSection(p):''}
-  ${p.status!=='Closed'?extraForm(W.filter(w=>w.progress!=='Complete'),p.id):''}
+  <section class="card"><div class="tablewrap"><table><thead><tr><th>Job</th><th>Planner note</th><th>Ready</th><th>Allocated to</th><th>Status</th>${TRADES.map(t=>`<th class="num">${t} actual</th>`).join('')}<th></th></tr></thead><tbody>${groups}</tbody></table></div></section>
+  ${addWoSection(shown[0],shown)}
+  ${extraForm(openW,shown[0].id,shown)}
   <div class="strip">${TRADES.map(t=>{const v=pl[t]?Math.round((act[t]-pl[t])/pl[t]*100):0;return `<div class="tile"><span class="label">${t} hours on completed jobs</span><span class="big">${fmt(act[t])} h</span><span class="meta">planned ${fmt(pl[t])} h ${pl[t]?`· <span class="tag ${Math.abs(v)<=5?'ok':v>0?'bad':'acc'}">${v>0?'+':''}${v}%</span>`:''}</span></div>`}).join('')}</div>
-  ${feed(p.id)}`;
+  ${feedMulti(ids)}`;
 }
 
 /* ---------- trends ---------- */
@@ -646,7 +666,7 @@ function wire(){
   const V=$('view');
   V.addEventListener('click',async e=>{
     const t=e.target.closest('button,[data-open],[data-goto]');if(!t)return;const d=t.dataset;
-    if(d.open){curPack=d.open;curVer=null;go(d.to)}
+    if(d.open){curPack=d.open;curVer=null;if(d.to==='floor'){floorSel.clear();floorSel.add(d.open)}go(d.to)}
     else if(d.goto)go(d.goto);
     else if(t.id==='selShown'){S.tasks.filter(x=>taskMatches(x,newFilter)).forEach(x=>newSel.add(x.ref));render()}
     else if(t.id==='createPack'){await createPack(new FormData($('newForm')))}
@@ -668,6 +688,8 @@ function wire(){
       await upd('work_orders',w.no,{progress:done?'Complete':'Passed back',completed_at:done?now:null,worked_min:mins,run_from:null,paused_at:null,pause_reason:null,pause_log:log},done?`Completed: ${w.title} in ${fmtMin(mins)} working`:`Passed back to the line: ${w.title}`,w.pack_id);
       if(done)toast('Complete — add actual hours if different from plan')}
     else if(d.reopen){const w=woBy(d.reopen);await upd('work_orders',w.no,{progress:'In progress',completed_at:null,run_from:new Date().toISOString(),paused_at:null},`Reopened: ${w.title}`,w.pack_id)}
+    else if(d.floorpk){if(floorSel.size===1&&floorSel.has(d.floorpk))floorSel.clear();else{floorSel.clear();floorSel.add(d.floorpk)}curPack=d.floorpk;render()}
+    else if(d.floorall){floorSel.clear();render()}
     else if(d.matf){matFilter=d.matf;render()}
     else if(d.addsp){const tb=t.closest('form').querySelector('.sptable tbody'),r=tb.querySelector('.sprow').cloneNode(true);
       r.querySelectorAll('input').forEach(i=>{if(i.name==='sp_qty')i.value=1;else if(i.name!=='sp_rdd')i.value=''});r.querySelector('select').value='Routine';tb.appendChild(r);r.querySelector('input').focus()}
@@ -714,11 +736,11 @@ function wire(){
     try{
       if(e.target.id==='newForm')await createPack(f);
       else if(e.target.id==='manualNew'){const r=manualFromForm(f);if(r.err){toast(r.err);return}newManual.push(r.row);e.target.reset();render();toast('Added — it will be created with the pack')}
-      else if(e.target.id==='addWoTask'){const p=packById(curPack),raw=(f.get('task')||'').trim(),ref=raw.split(' — ')[0].trim().toUpperCase(),t=taskByRef(ref);
+      else if(e.target.id==='addWoTask'){const p=packById(f.get('pack')||curPack),raw=(f.get('task')||'').trim(),ref=raw.split(' — ')[0].trim().toUpperCase(),t=taskByRef(ref);
         if(!t){toast('Pick a task from the list');return}
         const no=(f.get('woNo')||'').trim().toUpperCase().replace(/\s+/g,'')||rid('WO-',6);if(S.work_orders.some(w=>w.no===no)){toast(`${no} is already in use`);return}
         await ins('work_orders',[{no,pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:stdParts(t,p.start_date),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''})),...floorFields()}],`Added ${no} (${t.title}) to ${p.id}${role==='shiftlead'?' on the floor':' v'+p.version}`,p.id);e.target.reset();toast(`${no} added`)}
-      else if(e.target.id==='addWoManual'){const p=packById(curPack),r=manualFromForm(f);if(r.err){toast(r.err);return}
+      else if(e.target.id==='addWoManual'){const p=packById(f.get('pack')||curPack),r=manualFromForm(f);if(r.err){toast(r.err);return}
         const row={...r.row,no:r.row.no||rid('WO-',6),pack_id:p.id,added_v:p.version,...floorFields()};
         await ins('work_orders',[row],`Added ${row.no} (${row.title}) to ${p.id}${role==='shiftlead'?' on the floor':' v'+p.version}${row.parts.length?' with '+row.parts.length+' spares line'+(row.parts.length>1?'s':''):''}${row.tools.length?', '+row.tools.length+' tool'+(row.tools.length>1?'s':''):''}`,p.id);e.target.reset();toast(`${row.no} added — tools and spares sent to Tooling and Materials`)}
       else if(e.target.id==='addWo'){const p=packById(curPack),ref=f.get('ref');let row;
@@ -726,7 +748,7 @@ function wire(){
         else{const title=(f.get('title')||'').trim();if(!title){toast('Describe the ADF first');return}
           const hrs={};TRADES.forEach(t=>hrs[t]=Number(f.get('h'+t))||0);row={no:rid('WO-',6),pack_id:p.id,ref:null,type:'ADF',title:/^ADF/i.test(title)?title:'ADF: '+title,hrs,flags:{},added_v:p.version}}
         await ins('work_orders',[row],`Added ${row.no} (${row.title}) to v${p.version}`,p.id)}
-      else if(e.target.id==='extraForm'){const pk=packById(e.target.dataset.pack),reason=f.get('reason').trim();
+      else if(e.target.id==='extraForm'){const pk=packById(f.get('xpack')||e.target.dataset.pack),reason=f.get('reason').trim();
         const lines=parseSpRows(f,true).map(l=>({...l,reason}));if(!lines.length){toast('Enter at least one part number');return}
         const summary=lines.map(l=>`${l.qty} × ${l.pn}${l.urg!=='Routine'?' ('+l.urg+')':''}`).join(', ');
         let no=f.get('wo');
