@@ -1,15 +1,32 @@
 /* Production Planner — shared multi-stakeholder demo (Supabase backend). All demo data is invented. */
 'use strict';
 const TRADES=['Mech','B1','B2'];
-const MAT_ST=['Requested','In stock','On order','Kitted','Issued','Not available'];
-const stdParts=t=>(t.materials||[]).map(m=>({pn:m.pn,exp:m.qty,qty:m.qty,stock:'Requested',eta:null,src:'standard'}));
+const MAT_ST=['Requested','Order received','Processing','Picked','Delivered','Not available'];
+const URG=['AOG','Critical','Routine'];
+const urgRank=u=>({AOG:0,Critical:1,Routine:2})[u]??2;
+const OLD_ST={'Not checked':'Requested','In stock':'Picked','On order':'Processing','Kitted':'Delivered','Issued':'Delivered'};
+const normSt=s=>OLD_ST[s]||s||'Requested';
+const PN_DESC={'DEMO-OIL-2380':'Engine oil, turbine (1 qt)','DEMO-FLT-2104':'Air conditioning pack filter','DEMO-GSKT-0951':'Tank access panel gasket','DEMO-SMP-0291':'Fluid sample bottle','DEMO-WHL-4410':'MLG wheel assembly','DEMO-BRK-2087':'MLG brake unit','DEMO-O2-3521':'Crew oxygen bottle','DEMO-SEAL-5211':'Cargo door seal','DEMO-PNT-5110':'Primer and topcoat kit','DEMO-FST-2510':'Floor panel fastener','DEMO-SEAL-3240':'Steering actuator seal kit','DEMO-WPR-3042':'Wiper blade'};
+function descFor(pn,title,i){if(PN_DESC[pn])return PN_DESC[pn];const t=String(title||'').toLowerCase();
+  if(i>0)return /removal/.test(t)?'O-ring and lockwire kit':'Consumables kit';
+  if(/filter/.test(t))return 'Filter element';if(/lubrication/.test(t))return 'Grease, aircraft general purpose';if(/removal/.test(t))return 'Seal and fastener kit';
+  if(/corrosion/.test(t))return 'Corrosion inhibitor and primer';if(/servicing/.test(t))return /oil/.test(t)?'Engine oil, turbine (1 qt)':/hydraulic/.test(t)?'Hydraulic fluid (1 qt)':/oxygen/.test(t)?'Oxygen cylinder':/tyre/.test(t)?'Nitrogen charge':/water/.test(t)?'Water treatment tablets':'Servicing consumables';
+  return 'Consumables kit'}
+const defRdd=d=>{const t=isoOf(T0);return d&&d>t?d:t};
+const stdParts=(t,rdd)=>(t.materials||[]).map((m,i)=>({pn:m.pn,desc:m.desc||descFor(m.pn,t.title,i),exp:m.qty,qty:m.qty,rdd:defRdd(rdd),urg:'Routine',stock:'Requested',tracking:'',src:'standard',hist:[{st:'Requested',at:new Date().toISOString(),by:role}]}));
+function partInfo(w,l){const p=packById(w.pack_id),t=w.ref&&taskByRef(w.ref);const idx=t?(t.materials||[]).findIndex(m=>m.pn===l.pn):-1;
+  const st=normSt(l.stock),rdd=l.rdd||(p&&p.start_date)||null;
+  return {desc:l.desc||(t&&idx>=0&&(t.materials[idx].desc||descFor(l.pn,t.title,idx)))||PN_DESC[l.pn]||'',rdd,urg:l.urg||'Routine',st,
+    overdue:!!rdd&&st!=='Delivered'&&dayNum(rdd)<0,due:rdd?dayNum(rdd):null}}
+const partsTip=w=>(w.parts||[]).map(l=>{const i=partInfo(w,l);return `${l.qty} × ${l.pn} ${i.desc?'('+i.desc+') ':''}— ${i.st}${i.urg!=='Routine'?' · '+i.urg:''}${i.rdd?' · RDD '+mon(i.rdd):''}${l.tracking?' · '+l.tracking:''}`}).join('\n');
+const matLvl=(st,overdue)=>st==='Delivered'?'ok':st==='Not available'||overdue?'bad':'warn';
 const TOOL_ST=['Not checked','Available','Booked','In calibration','U/S'];
 const PROG=['Not started','In progress','Complete','Passed back'];
 const DECISIONS=['Pending','Accepted','Rejected','G703'];
 const FLAGS=[['hangar','Hangar'],['stand','Stand'],['crane','Crane'],['defuel','Defuel'],['paint','Paint'],['dup','Dup insp']];
 const ROLES={
   planner:{name:'Planner',tabs:[['register','Register'],['new','New work pack'],['pack','Work pack'],['capacity','Capacity'],['tasks','Task database'],['escapes','Escapes'],['handover','Handover']]},
-  materials:{name:'Materials',tabs:[['mat','Parts queue'],['register','Register'],['handover','Handover']]},
+  materials:{name:'Materials',tabs:[['mat','Spares queue'],['register','Register'],['handover','Handover']]},
   tooling:{name:'Tooling & GSE',tabs:[['tool','Tools queue'],['register','Register'],['handover','Handover']]},
   shiftlead:{name:'Shift lead',tabs:[['floor','Shift board'],['escapes','Escapes'],['handover','Handover']]},
   management:{name:'Management',tabs:[['trends','Trends'],['register','Register'],['capacity','Capacity']]}
@@ -86,9 +103,11 @@ const counted=p=>live(p).filter(w=>w.decision!=='Rejected');
 const toWork=p=>live(p).filter(w=>w.decision==='Accepted'||w.decision==='G703');
 function packHrs(p){const h={Mech:0,B1:0,B2:0};counted(p).forEach(w=>TRADES.forEach(t=>h[t]+=Number(w.hrs?.[t])||0));return h}
 function spareSt(w){const L=w.parts||[];if(!L.length)return 'none';
-  if(L.some(l=>l.stock==='Not available'||(l.exp!=null&&Number(l.qty)<Number(l.exp))))return 'bad';
-  if(L.some(l=>!['In stock','Kitted','Issued'].includes(l.stock)))return 'warn';return 'ok'}
-const openRequests=()=>S.work_orders.filter(w=>{const p=packById(w.pack_id);return p&&p.status!=='Closed'&&w.decision!=='Rejected'&&!(w.removed_v&&w.removed_v<=p.version)}).flatMap(w=>(w.parts||[]).map((l,i)=>({w,l,i}))).filter(x=>x.l.src==='extra'&&x.l.stock==='Requested');
+  const I=L.map(l=>partInfo(w,l));
+  if(I.some(i=>i.st==='Not available'||i.overdue)||L.some(l=>l.exp!=null&&Number(l.qty)<Number(l.exp)))return 'bad';
+  if(I.some(i=>i.st!=='Delivered'))return 'warn';return 'ok'}
+const openLines=()=>S.work_orders.filter(w=>{const p=packById(w.pack_id);return p&&p.status!=='Closed'&&w.decision!=='Rejected'&&!(w.removed_v&&w.removed_v<=p.version)}).flatMap(w=>(w.parts||[]).map((l,i)=>({w,l,i,...partInfo(w,l)})));
+const openRequests=()=>openLines().filter(x=>x.st==='Requested');
 let xspPrefill=null;
 function extraForm(W,packId){
   return `<section class="card" id="extraCard"><h3>Request extra spares</h3><p class="sub">Raise extras against a work order in this work pack. If the defect isn't on a work order yet, enter its new work order number and it's added to the pack as an ADF for the planner to accept.</p>
@@ -98,8 +117,7 @@ function extraForm(W,packId){
       <label><span class="label">New work order number</span><input type="text" name="woNew" placeholder="e.g. WO-480200" autocomplete="off"></label>
       <label style="grid-column:span 2"><span class="label">Defect / task description</span><input type="text" name="woDesc" placeholder="e.g. Hydraulic seep at LH flap actuator"></label>
     </div>
-    <label><span class="label">Part number</span><input type="text" name="pn" required placeholder="e.g. DEMO-SEAL-0000"></label>
-    <label><span class="label">Qty</span><input type="number" name="qty" value="1" min="1" required></label>
+    <div class="wide"><span class="label">Spares</span>${spRows(packById(packId)?.start_date,1)}</div>
     <label class="wide"><span class="label">Reason</span><input type="text" name="reason" required placeholder="e.g. seal damaged on removal"></label>
     <div><button class="primary" type="submit">Request spares</button></div></form></section>`;
 }
@@ -189,16 +207,26 @@ function vRegister(){
 }
 
 const ataOf=ref=>(String(ref||'').split('-')[1]||'');
-const parseSpares=txt=>String(txt||'').split('\n').map(x=>x.trim()).filter(Boolean).map(x=>{const [pn,q]=x.split(/[,×x*]\s*(?=\d+\s*$)/);return {pn:(pn||x).replace(/,\s*$/,'').trim().toUpperCase(),qty:Number(q)||1}});
+const parseSpares=txt=>String(txt||'').split('\n').map(x=>x.trim()).filter(Boolean).map(x=>{const [pn,q,...d]=x.split(',').map(y=>y.trim());return {pn:(pn||'').toUpperCase(),qty:Number(q)||1,...(d.join(', ')?{desc:d.join(', ')}:{})}}).filter(m=>m.pn);
+function spRows(rdd,n=2){const row=`<tr class="sprow"><td><input type="text" name="sp_pn" placeholder="DEMO-SEAL-0000" autocomplete="off" aria-label="Part number" style="width:100%;min-width:130px"></td>
+    <td><input type="text" name="sp_desc" placeholder="e.g. Seal kit" aria-label="Description" style="width:100%;min-width:150px"></td>
+    <td><input type="number" name="sp_qty" min="1" value="1" aria-label="Number required"></td>
+    <td><input type="date" name="sp_rdd" value="${defRdd(rdd)}" aria-label="Required delivery date"></td>
+    <td><select name="sp_urg" aria-label="Urgency">${URG.map(u=>`<option${u==='Routine'?' selected':''}>${u}</option>`).join('')}</select></td></tr>`;
+  return `<div class="tablewrap"><table class="sptable"><thead><tr><th>Part number</th><th>Description</th><th class="num">No. req</th><th>RDD</th><th>Urgency</th></tr></thead><tbody>${row.repeat(n)}</tbody></table></div>
+  <button type="button" class="link" data-addsp="1" style="margin-top:6px">+ Add line</button>`}
+function parseSpRows(f,extra){const pn=f.getAll('sp_pn'),de=f.getAll('sp_desc'),q=f.getAll('sp_qty'),r=f.getAll('sp_rdd'),u=f.getAll('sp_urg');const now=new Date().toISOString();
+  return pn.map((x,i)=>({pn:String(x).trim().toUpperCase(),desc:String(de[i]||'').trim(),qty:Number(q[i])||1,rdd:r[i]||null,urg:u[i]||'Routine'})).filter(l=>l.pn)
+    .map(l=>({...l,exp:extra?null:l.qty,stock:'Requested',tracking:'',src:extra?'extra':'standard',by:role,actor:actor()||null,at:now,hist:[{st:'Requested',at:now,by:role}]}))}
 const parseTools=txt=>String(txt||'').split('\n').map(x=>x.trim()).filter(Boolean);
-function manualFields(){
+function manualFields(rdd){
   return `<label><span class="label">Work order number</span><input type="text" name="mNo" placeholder="e.g. WO-480300 (blank = auto)" autocomplete="off"></label>
     <label><span class="label">Type</span><select name="mType"><option value="ADF">ADF / defect</option><option value="OMP">Task not in database</option></select></label>
     <label style="grid-column:span 2"><span class="label">Description</span><input type="text" name="mTitle" placeholder="e.g. Hydraulic seep at LH flap actuator"></label>
     ${TRADES.map(t=>`<label><span class="label">${t} hours</span><input type="number" step="0.5" min="0" name="m${t}" value="0"></label>`).join('')}
     <div class="wide"><span class="label">Needs</span><div class="authpick row" style="gap:10px;margin-top:4px">${FLAGS.map(([k,l])=>`<label class="row" style="gap:4px;font-size:13px"><input type="checkbox" name="mf_${k}">${l}</label>`).join('')}</div></div>
     <label style="grid-column:span 2"><span class="label">Tools / GSE required (one per line)</span><textarea name="mTools" rows="3" placeholder="Torque wrench 200-800 Nm&#10;Access platform"></textarea></label>
-    <label style="grid-column:span 2"><span class="label">Spares required (one per line: part number, qty)</span><textarea name="mSpares" rows="3" placeholder="DEMO-SEAL-1234, 2&#10;DEMO-FST-0001, 6"></textarea></label>`;
+    <div class="wide"><span class="label">Spares required</span>${spRows(rdd,2)}</div>`;
 }
 function manualFromForm(f){
   const title=(f.get('mTitle')||'').trim();if(!title)return {err:'Add a description for the work order'};
@@ -208,7 +236,7 @@ function manualFromForm(f){
   const flags={};FLAGS.forEach(([k])=>{if(f.get('mf_'+k))flags[k]=1});
   const type=f.get('mType')==='OMP'?'OMP':'ADF';
   return {row:{no:no||null,ref:null,type,title:type==='ADF'&&!/^ADF/i.test(title)?'ADF: '+title:title,hrs,flags,
-    parts:parseSpares(f.get('mSpares')).map(m=>({pn:m.pn,exp:m.qty,qty:m.qty,stock:'Requested',eta:null,src:'standard'})),
+    parts:parseSpRows(f,false),
     tools:parseTools(f.get('mTools')).map(n=>({name:n,status:'Not checked',note:''}))}};
 }
 function taskMatches(t,F){
@@ -246,7 +274,7 @@ function vNew(){
     <div class="tasklist">${shown.slice(0,LIM).map(t=>`<label><input type="checkbox" data-newtask="${esc(t.ref)}" ${newSel.has(t.ref)?'checked':''}><span><b class="mono" style="font-size:12px">${esc(t.ref)}</b>${t.ind?'':' <span class="tag warn">review</span>'}<br>${esc(t.title)}<br><span class="label">${TRADES.filter(x=>t.hrs[x]).map(x=>x+' '+fmt(t.hrs[x])+'h').join(' · ')}${(t.materials||[]).length?' · '+t.materials.length+' spare'+(t.materials.length>1?'s':''):''}</span></span></label>`).join('')||'<div class="empty">No tasks match. Try fewer words or another ATA chapter.</div>'}</div>
   </section>
   <section class="card"><h3>Manual work order</h3><p class="sub">For defects (ADFs) and anything not in the task database. Tools and spares entered here go straight to Tooling and Materials when the pack is created.</p>
-    <form class="form" id="manualNew" style="margin-top:0">${manualFields()}<div><button type="submit">Add to this work pack</button></div></form></section>
+    <form class="form" id="manualNew" style="margin-top:0">${manualFields(newDraft.start||isoOf(addDays(T0,7)))}<div><button type="submit">Add to this work pack</button></div></form></section>
   <section class="card"><h3>Work orders in this pack (${total})</h3>
     ${total?`<div class="tablewrap"><table><thead><tr><th>Work order number</th><th>Task</th>${TRADES.map(t=>`<th class="num">${t}</th>`).join('')}<th>Tools</th><th>Spares</th><th></th></tr></thead><tbody>
       ${sel.map(t=>`<tr><td><input type="text" data-newwo="${esc(t.ref)}" value="${esc(newWoNos[t.ref]||'')}" placeholder="auto" size="12" aria-label="Work order number for ${esc(t.ref)}"></td><td>${esc(t.title)}<div class="mono" style="font-size:11px;color:var(--muted)">${esc(t.ref)}</div></td>${TRADES.map(x=>`<td class="num">${t.hrs[x]?fmt(t.hrs[x]):'–'}</td>`).join('')}<td style="font-size:12px">${(t.tooling||[]).map(esc).join('<br>')||'–'}</td><td class="mono" style="font-size:12px">${(t.materials||[]).map(m=>esc(m.pn)+' ×'+m.qty).join('<br>')||'–'}</td><td><button class="link" data-unsel="${esc(t.ref)}">Remove</button></td></tr>`).join('')}
@@ -272,7 +300,7 @@ function addWoSection(p){
       <label><span class="label">Work order number</span><input type="text" name="woNo" placeholder="blank = auto" autocomplete="off"></label>
       <div><button class="primary" type="submit">Add task</button></div></form>
     <h3 style="margin-top:18px">Or add a manual work order</h3><p class="sub">Tools and spares entered here go straight to Tooling and Materials.</p>
-    <form class="form" id="addWoManual" style="margin-top:0">${manualFields()}<div><button class="primary" type="submit">Add manual work order</button></div></form></section>`;
+    <form class="form" id="addWoManual" style="margin-top:0">${manualFields(p.start_date)}<div><button class="primary" type="submit">Add manual work order</button></div></form></section>`;
 }
 function vPack(){
   const P=S.packs.slice().sort((a,b)=>(a.status==='Closed')-(b.status==='Closed')||a.start_date.localeCompare(b.start_date));
@@ -340,10 +368,10 @@ function vTasks(){
   return `<section class="card"><div class="row spread"><div><h2>Task database</h2><p class="sub" style="margin:0">Industrialised OMP tasks. Edit hours and standard spares here and every new work pack uses them. ${S.tasks.filter(t=>t.ind).length} of ${S.tasks.length} industrialised.</p></div>
   <input type="search" id="taskFilter" placeholder="Search ref, title, part number or tool" value="${esc(taskFilter)}" aria-label="Search tasks" style="min-width:260px"></div>
   <p class="label" style="margin:8px 0 0">${all.length} task${all.length===1?'':'s'}${all.length>100?' · showing first 100, refine the search':''}</p>
-  <div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Task ref</th><th>Title</th>${TRADES.map(t=>`<th class="num">${t} h</th>`).join('')}<th>Tooling / GSE</th><th>Standard spares <span style="text-transform:none">(one per line: part, qty)</span></th><th>Needs</th><th>Status</th></tr></thead><tbody>
+  <div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Task ref</th><th>Title</th>${TRADES.map(t=>`<th class="num">${t} h</th>`).join('')}<th>Tooling / GSE</th><th>Standard spares <span style="text-transform:none">(one per line: part, qty, description)</span></th><th>Needs</th><th>Status</th></tr></thead><tbody>
   ${list.map(t=>`<tr><td class="mono">${esc(t.ref)}</td><td>${esc(t.title)}</td>${TRADES.map(tr=>`<td class="num"><input type="number" step="0.5" min="0" value="${t.hrs[tr]||0}" data-thrs="${esc(t.ref)}|${tr}" aria-label="${tr} hours"></td>`).join('')}
     <td style="font-size:13px">${(t.tooling||[]).map(esc).join('<br>')||'–'}</td>
-    <td><textarea rows="${Math.max(2,(t.materials||[]).length+1)}" data-tmat="${esc(t.ref)}" placeholder="PART-NUMBER, qty" aria-label="Standard spares" style="min-width:180px">${esc((t.materials||[]).map(m=>m.pn+', '+m.qty).join('\n'))}</textarea></td>
+    <td><textarea rows="${Math.max(2,(t.materials||[]).length+1)}" data-tmat="${esc(t.ref)}" placeholder="PART-NUMBER, qty, description" aria-label="Standard spares" style="min-width:260px">${esc((t.materials||[]).map((m,i)=>m.pn+', '+m.qty+', '+(m.desc||descFor(m.pn,t.title,i))).join('\n'))}</textarea></td>
     <td><div class="tags">${FLAGS.filter(([k])=>t.flags?.[k]).map(([,l])=>`<span class="tag">${l}</span>`).join('')}</div></td>
     <td><label class="row" style="font-size:13px;gap:4px"><input type="checkbox" data-tind="${esc(t.ref)}" ${t.ind?'checked':''}>Industrialised</label>${escN(t.ref)?`<span class="tag bad">${escN(t.ref)} open escape</span>`:''}</td></tr>`).join('')}
   </tbody></table></div></section>`;
@@ -410,46 +438,54 @@ function deptQueue(kind){
     <label><span class="label">Part number</span><input type="text" name="pn" required placeholder="DEMO-XXX-0000"></label><label><span class="label">Qty</span><input type="number" name="qty" value="1" min="1"></label><div><button class="primary" type="submit">Add line</button></div></form>`:''}</section>
   ${feed(p.id)}`;
 }
+let matFilter='open';
+function urgTag(u){return `<span class="tag ${u==='AOG'?'bad':u==='Critical'?'warn':''}">${esc(u)}</span>`}
+function rddCell(x){if(!x.rdd)return '–';const d=x.due;return `<span class="mono">${dShort(x.rdd)}</span>${x.st==='Delivered'?'':d<0?` <span class="tag bad">${-d}d overdue</span>`:d===0?' <span class="tag warn">today</span>':d<=2?` <span class="tag warn">${d}d</span>`:''}`}
+function lastUpd(l){const h=(l.hist||[]).at(-1);return h&&h.st!=='Requested'?`<div class="mono" style="font-size:11px;color:var(--muted)">${esc(normSt(h.st))} ${hm(h.at)}${dayNum(isoOf(new Date(h.at)))!==0?' '+mon(isoOf(new Date(h.at))):''}</div>`:''}
 function vMat(){
   const P=openPacks();if(!P.length)return '<div class="empty">No open work packs.</div>';
   const p=packById(curPack)&&packById(curPack).status!=='Closed'?packById(curPack):P[0];curPack=p.id;
-  const R=openRequests().sort((a,b)=>String(b.l.at||'').localeCompare(String(a.l.at||'')));
-  const W=counted(p).filter(w=>(w.parts||[]).length);
-  const lines=W.flatMap(w=>w.parts.map((l,i)=>({w,l,i})));
-  // collection list grouped by part number
-  const G={};lines.forEach(x=>{const k=x.l.pn;(G[k]=G[k]||{pn:k,qty:0,jobs:[],st:new Set(),extra:false}).qty+=Number(x.l.qty)||0;G[k].jobs.push(x);G[k].st.add(x.l.stock);if(x.l.src==='extra')G[k].extra=true});
-  const groups=Object.values(G).sort((a,b)=>(lvl([...a.st][0])==='ok')-(lvl([...b.st][0])==='ok')||a.pn.localeCompare(b.pn));
-  const c={ok:0,warn:0,bad:0};lines.forEach(x=>c[lvl(x.l.stock)]++);
-  const myChecks=CHECKS.filter(k=>k[2]==='materials');
-  const stSel=(attr,cur,mixed)=>`<select class="st-${mixed?'thin':lvl(cur)==='bad'?'miss':lvl(cur)==='warn'?'thin':'ok'}" ${attr} aria-label="Stock status">${mixed?'<option selected disabled>Mixed</option>':''}${MAT_ST.map(x=>`<option${!mixed&&x===cur?' selected':''}>${x}</option>`).join('')}</select>`;
-  const srcTag=l=>l.src==='extra'?`<span class="tag acc" title="${esc(l.reason||'')}">Extra</span>`:'<span class="tag">Standard</span>';
-  return `<section class="card"><div class="row spread"><div><h2>Parts queue</h2><p class="sub" style="margin:0">Standard spares come from the task database when a job is added. Extras are requested by the planner or shift lead against a job.</p></div>${packSelect(P,p.id)}</div></section>
-  <section class="card" style="${R.length?'border-color:var(--accent)':''}"><h3>Extra spares requests ${R.length?`<span class="status Planning">${R.length} new</span>`:''}</h3>
-  ${R.length?`<div class="tablewrap"><table><thead><tr><th>Work order</th><th>Part number</th><th class="num">Qty</th><th>Reason</th><th>Requested</th><th>Status</th></tr></thead><tbody>
-    ${R.map(({w,l,i})=>{const pk=packById(w.pack_id);return `<tr><td><b class="mono">${esc(w.no)}</b>${w.decision==='Pending'?' <span class="tag warn">awaiting planner</span>':''}<div style="font-size:12px;color:var(--muted)">${esc(w.title)}<br>${esc(pk.ac)} · ${esc(pk.id)}</div></td><td class="mono">${esc(l.pn)}</td><td class="num">${l.qty}</td>
-      <td>${esc(l.reason||'')}</td><td class="mono" style="font-size:12px">${l.at?ago(l.at):''}<div style="color:var(--muted)">${esc(ROLES[l.by]?.name||l.by||'')}${l.actor?' · '+esc(l.actor):''}</div></td><td>${stSel(`data-ps="${esc(w.no)}|${i}"`,l.stock)}</td></tr>`}).join('')}
-  </tbody></table></div>`:'<div class="empty">No outstanding extra requests.</div>'}</section>
+  const all=openLines();
+  const sortQ=(a,b)=>urgRank(a.urg)-urgRank(b.urg)||String(a.rdd||'9').localeCompare(String(b.rdd||'9'))||a.w.no.localeCompare(b.w.no);
+  const F={open:x=>x.st!=='Delivered',new:x=>x.st==='Requested',extra:x=>x.l.src==='extra'&&x.st!=='Delivered',overdue:x=>x.overdue,delivered:x=>x.st==='Delivered',all:()=>true};
+  const Q=all.filter(F[matFilter]||F.open).sort(sortQ);
+  const open=all.filter(x=>x.st!=='Delivered');
+  const nA=open.filter(x=>x.urg==='AOG').length,nC=open.filter(x=>x.urg==='Critical').length,nO=all.filter(x=>x.overdue).length,nNew=all.filter(x=>x.st==='Requested').length;
+  const stSel=(attr,cur,mixed,ov)=>`<select class="st-${mixed?'thin':matLvl(cur,ov)==='bad'?'miss':matLvl(cur,ov)==='warn'?'thin':'ok'}" ${attr} aria-label="Response">${mixed?'<option selected disabled>Mixed</option>':''}${MAT_ST.map(x=>`<option${!mixed&&x===cur?' selected':''}>${x}</option>`).join('')}</select>`;
+  const srcCell=x=>x.l.src==='extra'?`<span class="tag acc">Extra</span><div style="font-size:12px;color:var(--muted);max-width:200px">${esc(x.l.reason||'')}${x.l.by?' · '+esc(ROLES[x.l.by]?.name||x.l.by):''}${x.l.actor?' ('+esc(x.l.actor)+')':''}</div>`:'<span class="tag">Standard</span>';
+  const row=x=>{const pk=packById(x.w.pack_id);return `<tr class="${x.st==='Delivered'?'done':''}">
+    <td>${urgTag(x.urg)}</td><td style="white-space:nowrap">${rddCell(x)}</td>
+    <td><b class="mono">${esc(x.w.no)}</b>${x.w.decision==='Pending'?' <span class="tag warn">awaiting planner</span>':''}<div style="font-size:12px;color:var(--muted)">${esc(pk.ac)} · ${esc(x.w.title)}</div></td>
+    <td class="mono">${esc(x.l.pn)}</td><td>${esc(x.desc)||'<span style="color:var(--muted)">–</span>'}</td><td class="num"><b>${x.l.qty}</b>${x.l.exp!=null&&Number(x.l.qty)<Number(x.l.exp)?` <span class="tag bad">short ${x.l.exp-x.l.qty}</span>`:''}</td>
+    <td>${srcCell(x)}</td>
+    <td>${stSel(`data-ps="${esc(x.w.no)}|${x.i}"`,x.st,false,x.overdue)}${lastUpd(x.l)}</td>
+    <td><input type="text" value="${esc(x.l.tracking||'')}" data-ptr="${esc(x.w.no)}|${x.i}" placeholder="Tracking no." aria-label="Tracking number" style="width:130px"></td></tr>`};
+  const head=`<thead><tr><th>Urgency</th><th>RDD</th><th>Work order</th><th>Part number</th><th>Description</th><th class="num">No. req</th><th>Source</th><th>Response</th><th>Tracking</th></tr></thead>`;
+  // collection list for the chosen pack
+  const lines=all.filter(x=>x.w.pack_id===p.id);
+  const G={};lines.forEach(x=>{const k=x.l.pn;const g=(G[k]=G[k]||{pn:k,desc:x.desc,qty:0,jobs:[],st:new Set(),urg:'Routine',rdd:null});g.qty+=Number(x.l.qty)||0;g.jobs.push(x);g.st.add(x.st);if(urgRank(x.urg)<urgRank(g.urg))g.urg=x.urg;if(x.rdd&&(!g.rdd||x.rdd<g.rdd))g.rdd=x.rdd});
+  const groups=Object.values(G).sort((a,b)=>(a.st.has('Delivered')&&a.st.size===1)-(b.st.has('Delivered')&&b.st.size===1)||urgRank(a.urg)-urgRank(b.urg)||a.pn.localeCompare(b.pn));
+  const filt=[['open','Open'],['new','New requests'],['extra','Extras'],['overdue','Overdue'],['delivered','Delivered'],['all','All']];
+  return `<section class="card"><div class="row spread"><div><h2>Spares queue</h2><p class="sub" style="margin:0">Every spares line from open work packs, AOG first then by required delivery date. Set the response as it moves through, and add a tracking number.</p></div></div></section>
   <div class="strip">
-    <div class="tile"><span class="label">Part lines · ${esc(p.ac)}</span><span class="big">${lines.length}</span><span class="meta">${groups.length} part numbers · ${dShort(p.start_date)}</span></div>
-    <div class="tile"><span class="label">Ready</span><span class="big" style="color:var(--ok)">${c.ok}</span><span class="meta">in stock, kitted or issued</span></div>
-    <div class="tile ${c.warn?'warn':''}"><span class="label">To action</span><span class="big" style="color:var(--warn)">${c.warn}</span><span class="meta">requested or on order</span></div>
-    <div class="tile ${c.bad?'bad':''}"><span class="label">Not available</span><span class="big" style="color:var(--bad)">${c.bad}</span></div>
-    <div class="tile"><span class="label">Sign-off</span>${myChecks.map(([k,l])=>`<label class="row" style="font-size:14px"><input type="checkbox" data-chk="${p.id}|${k}" ${(p.checks||{})[k]?'checked':''}> ${esc(l)}</label>`).join('')}</div>
+    <div class="tile ${nA?'bad':''}"><span class="label">AOG open</span><span class="big" style="color:var(--bad)">${nA}</span></div>
+    <div class="tile ${nC?'warn':''}"><span class="label">Critical open</span><span class="big" style="color:var(--warn)">${nC}</span></div>
+    <div class="tile ${nO?'bad':''}"><span class="label">Past RDD</span><span class="big" style="color:var(--bad)">${nO}</span><span class="meta">not yet delivered</span></div>
+    <div class="tile ${nNew?'warn':''}"><span class="label">New requests</span><span class="big">${nNew}</span><span class="meta">awaiting a response</span></div>
+    <div class="tile"><span class="label">Delivered</span><span class="big" style="color:var(--ok)">${all.length-open.length}/${all.length}</span></div>
   </div>
-  <section class="card"><h3>Collection list — ${esc(p.ac)} · ${esc(p.check_type)}</h3><p class="sub">Every part needed for this work pack, totalled by part number. Setting a status here updates every job that uses that part.</p>
-  ${groups.length?`<div class="tablewrap"><table><thead><tr><th>Part number</th><th class="num">Total qty</th><th>Work orders</th><th>Status</th></tr></thead><tbody>
-    ${groups.map(g=>{const mixed=g.st.size>1,cur=[...g.st][0];return `<tr><td class="mono">${esc(g.pn)} ${g.extra?'<span class="tag acc">incl. extra</span>':''}</td><td class="num"><b>${g.qty}</b></td>
-      <td style="font-size:13px">${g.jobs.map(x=>`<b class="mono">${esc(x.w.no)}</b> ×${x.l.qty}${x.l.src==='extra'?' <span class="tag acc">extra</span>':''} <span style="color:var(--muted)">${esc(x.w.title)}</span>`).join('<br>')}</td>
-      <td>${stSel(`data-pnst="${esc(p.id)}|${esc(g.pn)}"`,cur,mixed)}</td></tr>`}).join('')}
-  </tbody></table></div>`:'<div class="empty">No spares on this work pack.</div>'}</section>
-  <section class="card"><h3>By work order</h3>
-  ${W.length?`<div class="tablewrap"><table><thead><tr><th>Part number</th><th>Source</th><th class="num">Standard</th><th class="num">Qty</th><th>Status</th><th>ETA</th></tr></thead><tbody>
-    ${W.map(w=>`<tr style="background:var(--bg)"><td colspan="6"><b class="mono">${esc(w.no)}</b> · ${esc(w.title)} ${stTag(spareSt(w))}</td></tr>`+w.parts.map((l,i)=>`<tr><td class="mono">${esc(l.pn)}</td><td>${srcTag(l)}${l.src==='extra'&&l.reason?`<div style="font-size:12px;color:var(--muted)">${esc(l.reason)}</div>`:''}</td><td class="num">${l.exp??'–'}</td>
-      <td class="num"><input type="number" min="0" value="${l.qty}" data-pq="${esc(w.no)}|${i}" aria-label="Quantity">${l.exp!=null&&Number(l.qty)<Number(l.exp)?` <span class="tag bad">Short ${l.exp-l.qty}</span>`:''}</td>
-      <td>${stSel(`data-ps="${esc(w.no)}|${i}"`,l.stock)}</td><td><input type="date" value="${l.eta||''}" data-pe="${esc(w.no)}|${i}" aria-label="ETA"></td></tr>`).join('')).join('')}
+  <section class="card"><div class="row" style="gap:6px;margin-bottom:10px">${filt.map(([k,l])=>`<button class="${matFilter===k?'primary':''}" data-matf="${k}">${l}</button>`).join('')}</div>
+  ${Q.length?`<div class="tablewrap"><table>${head}<tbody>${Q.map(row).join('')}</tbody></table></div>`:'<div class="empty">Nothing in this view.</div>'}</section>
+  <section class="card"><div class="row spread"><div><h3 style="margin:0">Collection list</h3><p class="sub" style="margin:4px 0 0">Every part for one work pack, totalled by part number. A response set here applies to every work order using that part.</p></div>${packSelect(P,p.id)}</div>
+  ${groups.length?`<div class="tablewrap" style="margin-top:10px"><table><thead><tr><th>Part number</th><th>Description</th><th class="num">Total</th><th>Urgency</th><th>Earliest RDD</th><th>Work orders</th><th>Response</th></tr></thead><tbody>
+    ${groups.map(g=>{const mixed=g.st.size>1,cur=[...g.st][0];return `<tr><td class="mono">${esc(g.pn)}</td><td>${esc(g.desc)}</td><td class="num"><b>${g.qty}</b></td><td>${urgTag(g.urg)}</td><td class="mono">${g.rdd?dShort(g.rdd):'–'}</td>
+      <td style="font-size:13px">${g.jobs.map(x=>`<b class="mono">${esc(x.w.no)}</b> ×${x.l.qty}${x.l.src==='extra'?' <span class="tag acc">extra</span>':''}`).join('<br>')}</td>
+      <td>${stSel(`data-pnst="${esc(p.id)}|${esc(g.pn)}"`,cur,mixed,false)}</td></tr>`}).join('')}
   </tbody></table></div>`:'<div class="empty">No spares on this work pack.</div>'}
-  <form class="form" id="addPart"><label><span class="label">Add part to work order</span><select name="wo">${counted(p).map(w=>`<option value="${esc(w.no)}">${esc(w.no)} — ${esc(w.title)}</option>`).join('')}</select></label>
-    <label><span class="label">Part number</span><input type="text" name="pn" required placeholder="DEMO-XXX-0000"></label><label><span class="label">Qty</span><input type="number" name="qty" value="1" min="1"></label><div><button class="primary" type="submit">Add line</button></div></form></section>
+  <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:12px">${CHECKS.filter(k=>k[2]==='materials').map(([k,l])=>`<label class="row" style="gap:6px;font-size:14px"><input type="checkbox" data-chk="${p.id}|${k}" ${(p.checks||{})[k]?'checked':''}> ${esc(l)}</label>`).join('')}</div></section>
+  <section class="card"><h3>Add spares to a work order</h3>
+  <form class="form" id="addPart" style="margin-top:0"><label><span class="label">Work order</span><select name="wo">${counted(p).map(w=>`<option value="${esc(w.no)}">${esc(w.no)} — ${esc(w.title)}</option>`).join('')}</select></label>
+    <div class="wide">${spRows(p.start_date,1)}</div><div><button class="primary" type="submit">Add</button></div></form></section>
   ${feed(p.id)}`;
 }
 const vTool=()=>deptQueue('tools');
@@ -501,7 +537,7 @@ function vFloor(){
     <td><b>${esc(w.title)}</b><div class="mono" style="font-size:11px;color:var(--muted)">${esc(w.no)} · ${TRADES.filter(t=>w.hrs?.[t]).map(t=>t+' '+fmt(w.hrs[t])+'h').join(' · ')}</div>
       <div class="tags" style="margin-top:3px">${w.decision==='G703'?'<span class="tag warn">G703</span>':''}${FLAGS.filter(([k])=>w.flags?.[k]).map(([,l])=>`<span class="tag ${l==='Dup insp'?'warn':''}">${l}</span>`).join('')}</div></td>
     <td style="font-size:13px;max-width:220px">${esc(w.comment)}</td>
-    <td><div class="tags">${(w.parts||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[spareSt(w)]}">Parts</span>`:''}${(w.tools||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[toolSt(w)]}">Tools</span>`:''}</div></td>
+    <td><div class="tags">${(w.parts||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[spareSt(w)]}" data-tip="${esc(partsTip(w))}">Parts ${(w.parts||[]).filter(l=>normSt(l.stock)==='Delivered').length}/${w.parts.length}</span>`:''}${(w.tools||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[toolSt(w)]}">Tools</span>`:''}</div></td>
     <td><input type="text" value="${esc(w.assignee)}" data-asg="${esc(w.no)}" placeholder="e.g. M-02, B1-01" size="12" ${ed?'':'disabled'} aria-label="Allocated to"></td>
     <td><span class="tag ${isPaused(w)?'bad':w.progress==='Complete'?'ok':w.progress==='In progress'?'warn':w.progress==='Passed back'?'bad':''}">${isPaused(w)?'Paused':esc(w.progress)}</span><div class="mono" style="font-size:11px;color:var(--muted);margin-top:3px">${when(w)}</div><div class="row" style="margin-top:6px;gap:6px">${btn(w)}</div></td>
     ${TRADES.map(t=>`<td class="num">${w.hrs?.[t]?`<input type="number" step="0.25" min="0" value="${w.actual?.[t]??''}" placeholder="${fmt(w.hrs[t])}" data-act="${esc(w.no)}|${t}" ${ed&&w.progress!=='Not started'?'':'disabled'} aria-label="${t} actual hours">`:'–'}</td>`).join('')}
@@ -584,7 +620,7 @@ async function createPack(f){
   const p=await ins('packs',[{id,ac,check_type:check,start_date:start,days,version:1,status:'Planning',checks:{received:true}}],`Created ${id} for ${ac} (${check}) with ${newSel.size+newManual.length} work orders`,id);
   if(!p)return;
   const rows=[...newSel].map(ref=>{const t=taskByRef(ref);return {no:newWoNos[ref]||rid('WO-',6),pack_id:id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:1,
-    parts:stdParts(t),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}});
+    parts:stdParts(t,start),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}});
   newManual.forEach(m=>rows.push({...m,no:m.no||rid('WO-',6),pack_id:id,added_v:1}));
   await ins('work_orders',rows);
   newSel.clear();newDraft={};newWoNos={};newManual=[];newFilter={q:'',ata:'',selOnly:false};curPack=id;curVer=null;go('pack');toast('Work pack created — Materials and Tooling can see it now');
@@ -632,6 +668,9 @@ function wire(){
       await upd('work_orders',w.no,{progress:done?'Complete':'Passed back',completed_at:done?now:null,worked_min:mins,run_from:null,paused_at:null,pause_reason:null,pause_log:log},done?`Completed: ${w.title} in ${fmtMin(mins)} working`:`Passed back to the line: ${w.title}`,w.pack_id);
       if(done)toast('Complete — add actual hours if different from plan')}
     else if(d.reopen){const w=woBy(d.reopen);await upd('work_orders',w.no,{progress:'In progress',completed_at:null,run_from:new Date().toISOString(),paused_at:null},`Reopened: ${w.title}`,w.pack_id)}
+    else if(d.matf){matFilter=d.matf;render()}
+    else if(d.addsp){const tb=t.closest('form').querySelector('.sptable tbody'),r=tb.querySelector('.sprow').cloneNode(true);
+      r.querySelectorAll('input').forEach(i=>{if(i.name==='sp_qty')i.value=1;else if(i.name!=='sp_rdd')i.value=''});r.querySelector('select').value='Routine';tb.appendChild(r);r.querySelector('input').focus()}
     else if(d.xsp){xspPrefill=d.xsp;render();const c=$('extraCard');if(c){c.scrollIntoView({behavior:'smooth',block:'center'});setTimeout(()=>{const i=c.querySelector('[name=pn]');i&&i.focus()},300)}}
     else if(d.escfor){const w=woBy(d.escfor);escPrefill={pack:w.pack_id,ref:w.ref,detail:w.no+': '};go('escapes')}
   });
@@ -648,10 +687,11 @@ function wire(){
       await upd('packs',id,{checks:c},`${t.checked?'Ticked':'Unticked'} "${lbl}" on ${id}`,id);return}
     if(d.dec){const w=woBy(d.dec);await upd('work_orders',w.no,{decision:t.value},`${w.no} (${w.title}) set to ${t.value}`,w.pack_id);return}
     if(d.woc){const w=woBy(d.woc);await upd('work_orders',w.no,{comment:t.value},`Note added to ${w.no}`,w.pack_id);return}
-    if(d.ps){const [no,i]=d.ps.split('|');const l=woBy(no).parts[i];await setLine(no,'parts',+i,{stock:t.value},`${l.pn} set to ${t.value}`);return}
-    if(d.pnst){const [pid,pn]=d.pnst.split('|');const ws=counted(packById(pid)).filter(w=>(w.parts||[]).some(l=>l.pn===pn));
-      for(const w of ws){const arr=w.parts.map(l=>l.pn===pn?{...l,stock:t.value}:l);await upd('work_orders',w.no,{parts:arr})}
-      log(`${pn} set to ${t.value} for ${ws.length} job${ws.length===1?'':'s'}`,pid);return}
+    if(d.ps){const [no,i]=d.ps.split('|');const l=woBy(no).parts[i];await setLine(no,'parts',+i,{stock:t.value,hist:[...(l.hist||[]),{st:t.value,at:new Date().toISOString(),by:role,actor:actor()||null}]},`${no}: ${l.pn} — ${t.value}${l.tracking?' (tracking '+l.tracking+')':''}`);return}
+    if(d.ptr){const [no,i]=d.ptr.split('|');const l=woBy(no).parts[i],v=t.value.trim();await setLine(no,'parts',+i,{tracking:v},v?`${no}: ${l.pn} tracking ${v}`:null);return}
+    if(d.pnst){const [pid,pn]=d.pnst.split('|');const ws=counted(packById(pid)).filter(w=>(w.parts||[]).some(l=>l.pn===pn)),now=new Date().toISOString();
+      for(const w of ws){const arr=w.parts.map(l=>l.pn===pn?{...l,stock:t.value,hist:[...(l.hist||[]),{st:t.value,at:now,by:role,actor:actor()||null}]}:l);await upd('work_orders',w.no,{parts:arr})}
+      log(`${pn} — ${t.value} for ${ws.map(w=>w.no).join(', ')}`,pid);return}
     if(d.pq){const [no,i]=d.pq.split('|');const l=woBy(no).parts[i];await setLine(no,'parts',+i,{qty:Number(t.value)||0},`${l.pn} ordered qty ${Number(t.value)||0}`);return}
     if(d.pe){const [no,i]=d.pe.split('|');const l=woBy(no).parts[i];await setLine(no,'parts',+i,{eta:t.value||null},t.value?`${l.pn} ETA ${dShort(t.value)}`:null);return}
     if(d.ts){const [no,i]=d.ts.split('|');const l=woBy(no).tools[i];await setLine(no,'tools',+i,{status:t.value},`${l.name} set to ${t.value}`);return}
@@ -662,7 +702,7 @@ function wire(){
     if(d.esc){await upd('escapes',+d.esc,{done:t.checked},t.checked?'Escape closed — task database updated':'Escape reopened');return}
     if(d.ho){await upd('handover',+d.ho,{done:t.checked},t.checked?'Handover item closed':'Handover item reopened');return}
     if(d.thrs){const [ref,tr]=d.thrs.split('|');const x=taskByRef(ref);await upd('tasks',ref,{hrs:{...x.hrs,[tr]:Number(t.value)||0}},`${ref} ${tr} hours set to ${Number(t.value)||0}`);return}
-    if(d.tmat){const mats=t.value.split('\n').map(x=>x.trim()).filter(Boolean).map(x=>{const [pn,q]=x.split(/[,×x*]\s*(?=\d+\s*$)/);return {pn:(pn||x).replace(/,\s*$/,'').trim().toUpperCase(),qty:Number(q)||1}});
+    if(d.tmat){const mats=parseSpares(t.value);
       await upd('tasks',d.tmat,{materials:mats},`${d.tmat} standard spares updated (${mats.length} line${mats.length===1?'':'s'})`);toast('Saved — new work packs will use these spares');return}
     if(d.tind){await upd('tasks',d.tind,{ind:t.checked},`${d.tind} marked ${t.checked?'industrialised':'needs review'}`);return}
     if(d.roster){const r=roster();let patch;if(d.roster==='prod')patch={prod:Number(t.value)||0};else{const [k,tr]=d.roster.split('|');patch={[k]:{...r[k],[tr]:Number(t.value)||0}}}
@@ -677,29 +717,30 @@ function wire(){
       else if(e.target.id==='addWoTask'){const p=packById(curPack),raw=(f.get('task')||'').trim(),ref=raw.split(' — ')[0].trim().toUpperCase(),t=taskByRef(ref);
         if(!t){toast('Pick a task from the list');return}
         const no=(f.get('woNo')||'').trim().toUpperCase().replace(/\s+/g,'')||rid('WO-',6);if(S.work_orders.some(w=>w.no===no)){toast(`${no} is already in use`);return}
-        await ins('work_orders',[{no,pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:stdParts(t),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''})),...floorFields()}],`Added ${no} (${t.title}) to ${p.id}${role==='shiftlead'?' on the floor':' v'+p.version}`,p.id);e.target.reset();toast(`${no} added`)}
+        await ins('work_orders',[{no,pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:stdParts(t,p.start_date),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''})),...floorFields()}],`Added ${no} (${t.title}) to ${p.id}${role==='shiftlead'?' on the floor':' v'+p.version}`,p.id);e.target.reset();toast(`${no} added`)}
       else if(e.target.id==='addWoManual'){const p=packById(curPack),r=manualFromForm(f);if(r.err){toast(r.err);return}
         const row={...r.row,no:r.row.no||rid('WO-',6),pack_id:p.id,added_v:p.version,...floorFields()};
         await ins('work_orders',[row],`Added ${row.no} (${row.title}) to ${p.id}${role==='shiftlead'?' on the floor':' v'+p.version}${row.parts.length?' with '+row.parts.length+' spares line'+(row.parts.length>1?'s':''):''}${row.tools.length?', '+row.tools.length+' tool'+(row.tools.length>1?'s':''):''}`,p.id);e.target.reset();toast(`${row.no} added — tools and spares sent to Tooling and Materials`)}
       else if(e.target.id==='addWo'){const p=packById(curPack),ref=f.get('ref');let row;
-        if(ref){const t=taskByRef(ref);row={no:rid('WO-',6),pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:stdParts(t),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}}
+        if(ref){const t=taskByRef(ref);row={no:rid('WO-',6),pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:stdParts(t,p.start_date),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}}
         else{const title=(f.get('title')||'').trim();if(!title){toast('Describe the ADF first');return}
           const hrs={};TRADES.forEach(t=>hrs[t]=Number(f.get('h'+t))||0);row={no:rid('WO-',6),pack_id:p.id,ref:null,type:'ADF',title:/^ADF/i.test(title)?title:'ADF: '+title,hrs,flags:{},added_v:p.version}}
         await ins('work_orders',[row],`Added ${row.no} (${row.title}) to v${p.version}`,p.id)}
-      else if(e.target.id==='extraForm'){const pk=packById(e.target.dataset.pack),pn=f.get('pn').trim().toUpperCase(),qty=Number(f.get('qty'))||1,reason=f.get('reason').trim();
-        const line={pn,exp:null,qty,stock:'Requested',eta:null,src:'extra',reason,by:role,actor:actor()||null,at:new Date().toISOString()};
+      else if(e.target.id==='extraForm'){const pk=packById(e.target.dataset.pack),reason=f.get('reason').trim();
+        const lines=parseSpRows(f,true).map(l=>({...l,reason}));if(!lines.length){toast('Enter at least one part number');return}
+        const summary=lines.map(l=>`${l.qty} × ${l.pn}${l.urg!=='Routine'?' ('+l.urg+')':''}`).join(', ');
         let no=f.get('wo');
         if(no==='__new'){no=(f.get('woNew')||'').trim().toUpperCase().replace(/\s+/g,'');const desc=(f.get('woDesc')||'').trim();
           if(!no||!desc){toast('Enter the new work order number and a description');return}
           const ex=woBy(no);
           if(ex&&ex.pack_id!==pk.id){toast(`${no} already belongs to ${ex.pack_id}`);return}
-          if(!ex){const row={no,pack_id:pk.id,ref:null,type:'ADF',title:/^ADF/i.test(desc)?desc:'ADF: '+desc,hrs:{Mech:0,B1:0,B2:0},flags:{},added_v:pk.version,decision:'Pending',comment:`Raised by ${ROLES[role].name}${actor()?' ('+actor()+')':''} with extra spares`,parts:[line]};
-            if(await ins('work_orders',[row],`New work order ${no} raised (${row.title}) with ${qty} × ${pn} — awaiting planner decision`,pk.id)){xspPrefill=no;e.target.reset();if($('newWoFields'))$('newWoFields').hidden=true;toast(`${no} added to ${pk.id} and spares sent to Materials`)}
+          if(!ex){const row={no,pack_id:pk.id,ref:null,type:'ADF',title:/^ADF/i.test(desc)?desc:'ADF: '+desc,hrs:{Mech:0,B1:0,B2:0},flags:{},added_v:pk.version,decision:'Pending',comment:`Raised by ${ROLES[role].name}${actor()?' ('+actor()+')':''} with extra spares`,parts:lines};
+            if(await ins('work_orders',[row],`New work order ${no} raised (${row.title}) with ${summary} — awaiting planner decision`,pk.id)){xspPrefill=no;e.target.reset();if($('newWoFields'))$('newWoFields').hidden=true;toast(`${no} added to ${pk.id} and spares sent to Materials`)}
             return}}
         const w=woBy(no);
-        if(await upd('work_orders',no,{parts:[...(w.parts||[]),line]},`Extra spares on ${no}: ${qty} × ${pn} — ${reason}`,w.pack_id)){xspPrefill=no;e.target.reset();if($('newWoFields'))$('newWoFields').hidden=true;toast(`Request sent to Materials against ${no}`)}}
-      else if(e.target.id==='addPart'){const no=f.get('wo'),w=woBy(no);const arr=[...(w.parts||[]),{pn:f.get('pn').trim().toUpperCase(),exp:null,qty:Number(f.get('qty'))||1,stock:'Requested',eta:null,src:'extra',reason:'Added by Materials',by:role,at:new Date().toISOString()}];
-        await upd('work_orders',no,{parts:arr},`Added part ${f.get('pn').trim()} to ${no}`,w.pack_id)}
+        if(await upd('work_orders',no,{parts:[...(w.parts||[]),...lines]},`Extra spares on ${no}: ${summary} — ${reason}`,w.pack_id)){xspPrefill=no;e.target.reset();if($('newWoFields'))$('newWoFields').hidden=true;toast(`Request sent to Materials against ${no}`)}}
+      else if(e.target.id==='addPart'){const no=f.get('wo'),w=woBy(no),lines=parseSpRows(f,true).map(l=>({...l,reason:'Added by Materials'}));if(!lines.length){toast('Enter a part number');return}
+        if(await upd('work_orders',no,{parts:[...(w.parts||[]),...lines]},`Materials added ${lines.map(l=>l.qty+' × '+l.pn).join(', ')} to ${no}`,w.pack_id)){e.target.reset();toast('Added')}}
       else if(e.target.id==='escForm'){await ins('escapes',[{pack_id:f.get('pack')||null,ref:f.get('ref')||null,raised_by:f.get('by'),type:f.get('type'),detail:f.get('detail'),action:f.get('action')||''}],`Escape logged: ${f.get('type')}`,f.get('pack')||null);escPrefill=null;toast('Escape logged')}
       else if(e.target.id==='hoForm'){await ins('handover',[{level:f.get('level'),ref:f.get('ref'),issue:f.get('issue'),plan:f.get('plan')||'',role}],'Added to handover');toast('Added to handover')}
     }finally{if(btn.isConnected)btn.disabled=false}
