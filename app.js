@@ -208,7 +208,7 @@ function vPack(){
       <td><div class="tags">${FLAGS.filter(([k])=>w.flags?.[k]).map(([,l])=>`<span class="tag">${l}</span>`).join('')}</div></td>
       <td class="keep">${ed?`<select class="s-${w.decision}" data-dec="${esc(w.no)}" aria-label="Decision">${DECISIONS.map(s=>`<option${s===w.decision?' selected':''}>${s}</option>`).join('')}</select>`:`<span class="tag">${esc(w.decision)}</span>`}</td>
       <td class="keep">${ed?`<input type="text" value="${esc(w.comment)}" data-woc="${esc(w.no)}" placeholder="Note for shift lead" aria-label="Note for shift lead" style="width:100%;min-width:170px">`:esc(w.comment)}</td>
-      <td class="keep">${p.status==='In work'||p.status==='Closed'?`<span class="tag ${w.progress==='Complete'?'ok':w.progress==='Passed back'?'bad':w.progress==='In progress'?'warn':''}">${esc(w.progress)}</span>`:''}${ed&&!rem?` <button class="link" data-rmwo="${esc(w.no)}" title="Remove in this version">Remove</button>`:''}</td></tr>`}).join('');
+      <td class="keep">${p.status==='In work'||p.status==='Closed'?`<span class="tag ${isPaused(w)?'bad':w.progress==='Complete'?'ok':w.progress==='Passed back'?'bad':w.progress==='In progress'?'warn':''}">${isPaused(w)?'Paused — '+esc(w.pause_reason||''):esc(w.progress)}</span>`:''}${ed&&!rem?` <button class="link" data-rmwo="${esc(w.no)}" title="Remove in this version">Remove</button>`:''}</td></tr>`}).join('');
   const taskOpts=S.tasks.map(t=>`<option value="${esc(t.ref)}">${esc(t.ref)} — ${esc(t.title)}</option>`).join('');
   return `<section class="card"><div class="row spread"><div><h2>${esc(p.ac)} · ${esc(p.check_type)} <span class="status ${p.status.replace(' ','-')}">${esc(p.status)}</span></h2><p class="sub" style="margin:0">${esc(p.id)} · input ${dShort(p.start_date)} for ${p.days} days</p></div>
     <div class="row">${packSelect(P,p.id)}
@@ -330,6 +330,12 @@ const vTool=()=>deptQueue('tools');
 
 function hm(t){return t?new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):''}
 function dur(a,b){if(!a)return '';const m=Math.max(0,Math.round(((b?new Date(b):new Date())-new Date(a))/60000));return m<60?m+' min':Math.floor(m/60)+'h '+String(m%60).padStart(2,'0')+'m'}
+const PAUSE_REASONS=['Awaiting spares','Awaiting tooling / GSE','Awaiting inspection','Manpower moved','Shift change / break','Aircraft access','Other'];
+const runFrom=w=>w.run_from||(w.progress==='In progress'&&!w.paused_at&&Number(w.worked_min||0)===0?w.started_at:null);
+function workedMin(w){const base=Number(w.worked_min)||0,rf=runFrom(w);return base+(w.progress==='In progress'&&!w.paused_at&&rf?Math.max(0,(Date.now()-new Date(rf))/60000):0)}
+function pausedMin(w){return (w.pause_log||[]).reduce((a,p)=>a+Math.max(0,((p.to?new Date(p.to):new Date())-new Date(p.from))/60000),0)}
+const fmtMin=m=>{m=Math.round(m);return m<60?m+' min':Math.floor(m/60)+'h '+String(m%60).padStart(2,'0')+'m'};
+const isPaused=w=>w.progress==='In progress'&&!!w.paused_at;
 function vFloor(){
   const P=openPacks();if(!P.length)return '<div class="empty">No open work packs.</div>';
   const inWork=P.filter(p=>p.status==='In work');
@@ -337,22 +343,30 @@ function vFloor(){
   const ed=p.status==='In work';
   const order={'In progress':0,'Not started':1,'Passed back':2,'Complete':3};
   const W=toWork(p).sort((a,b)=>order[a.progress]-order[b.progress]||a.no.localeCompare(b.no));
-  const n=k=>W.filter(w=>w.progress===k).length, g=progress(p);
+  const n=k=>W.filter(w=>w.progress===k).length, g=progress(p), pausedN=W.filter(isPaused).length, running=n('In progress')-pausedN;
   const remain={Mech:0,B1:0,B2:0};W.filter(w=>w.progress==='Not started'||w.progress==='In progress').forEach(w=>TRADES.forEach(t=>remain[t]+=Number(w.hrs?.[t])||0));
   const r=roster(),we=[0,6].includes(new Date().getDay()),heads=we?r.weekend:r.weekday;
-  const people=new Set(W.filter(w=>w.progress==='In progress'&&w.assignee).flatMap(w=>w.assignee.split(/[,/&]+/).map(x=>x.trim().toUpperCase()).filter(Boolean)));
+  const people=new Set(W.filter(w=>w.progress==='In progress'&&!w.paused_at&&w.assignee).flatMap(w=>w.assignee.split(/[,/&]+/).map(x=>x.trim().toUpperCase()).filter(Boolean)));
   const act={Mech:0,B1:0,B2:0},pl={Mech:0,B1:0,B2:0};W.filter(w=>w.progress==='Complete').forEach(w=>TRADES.forEach(t=>{pl[t]+=Number(w.hrs?.[t])||0;act[t]+=Number(w.actual?.[t]??w.hrs?.[t])||0}));
   const btn=w=>{if(!ed)return '';
     if(w.progress==='Not started')return `<button class="primary" data-start="${esc(w.no)}">Start</button>`;
-    if(w.progress==='In progress')return `<button class="primary" data-done="${esc(w.no)}" style="background:var(--ok);border-color:var(--ok)">Complete</button> <button class="link" data-pb="${esc(w.no)}">Pass back</button>`;
+    if(isPaused(w))return `<button class="primary" data-resume="${esc(w.no)}">Resume</button>`;
+    if(w.progress==='In progress')return `<button class="primary" data-done="${esc(w.no)}" style="background:var(--ok);border-color:var(--ok)">Complete</button>
+      <span class="row" style="gap:4px"><select data-preason="${esc(w.no)}" aria-label="Pause reason" style="max-width:150px">${PAUSE_REASONS.map(r=>`<option>${r}</option>`).join('')}</select><button data-pause="${esc(w.no)}">Pause</button></span>
+      <button class="link" data-pb="${esc(w.no)}">Pass back</button>`;
     return `<button class="link" data-reopen="${esc(w.no)}">Reopen</button>`};
-  const when=w=>w.progress==='In progress'?`Started ${hm(w.started_at)} · ${dur(w.started_at)}`:w.progress==='Complete'?`Done ${hm(w.completed_at)}${w.started_at?' · took '+dur(w.started_at,w.completed_at):''}`:w.progress==='Passed back'?'Passed back to the line':'';
+  const when=w=>{const pm=pausedMin(w);
+    if(isPaused(w))return `Paused ${hm(w.paused_at)} · ${esc(w.pause_reason||'')}<br>Worked ${fmtMin(workedMin(w))} · paused ${fmtMin((Date.now()-new Date(w.paused_at))/60000)}`;
+    if(w.progress==='In progress')return `Started ${hm(w.started_at)} · working ${fmtMin(workedMin(w))}${pm?'<br>paused '+fmtMin(pm)+' so far':''}`;
+    if(w.progress==='Complete')return `Done ${hm(w.completed_at)} · ${fmtMin(workedMin(w))} working${pm?'<br>paused '+fmtMin(pm):''}`;
+    return w.progress==='Passed back'?'Passed back to the line':''};
   return `<section class="card"><div class="row spread"><div><h2>Shift board — ${esc(p.ac)} · ${esc(p.check_type)} <span class="status ${p.status.replace(' ','-')}">${esc(p.status)}</span></h2><p class="sub" style="margin:0">Allocate people, press Start when a job begins and Complete when it's finished. The planner and management see it straight away.</p></div>${packSelect(P,p.id)}</div>
   ${!ed?'<p class="warnbar" style="margin:10px 0 0">This work pack hasn\'t been released to production yet. Jobs can be started once the planner releases it.</p>':''}
   <div style="margin-top:12px"><span class="label">Complete ${g.done}/${g.total}</span>${meter(g.pct,false)}</div></section>
   <div class="strip">
     <div class="tile"><span class="label">Not started</span><span class="big">${n('Not started')}</span></div>
-    <div class="tile ${n('In progress')?'warn':''}"><span class="label">In progress</span><span class="big" style="color:var(--warn)">${n('In progress')}</span><span class="meta">${people.size} ${people.size===1?'person':'people'} allocated</span></div>
+    <div class="tile ${running?'warn':''}"><span class="label">In progress</span><span class="big" style="color:var(--warn)">${running}</span><span class="meta">${people.size} ${people.size===1?'person':'people'} allocated</span></div>
+    <div class="tile ${pausedN?'bad':''}"><span class="label">Paused</span><span class="big" style="color:var(--bad)">${pausedN}</span><span class="meta">${pausedN?esc([...new Set(W.filter(isPaused).map(w=>w.pause_reason))].join(', ')):'none'}</span></div>
     <div class="tile"><span class="label">Complete</span><span class="big" style="color:var(--ok)">${n('Complete')}</span><span class="meta">${n('Passed back')} passed back</span></div>
     <div class="tile"><span class="label">Hours left vs manpower today</span><div class="hrs">${TRADES.map(t=>{const av=(Number(heads[t])||0)*Number(r.prod);const over=remain[t]>av;return `<div><span class="label">${t}</span><b style="color:${over?'var(--bad)':'var(--fg)'}">${fmt(remain[t])}</b><span class="label">of ${fmt(av)} h</span></div>`}).join('')}</div></div>
   </div>
@@ -363,7 +377,7 @@ function vFloor(){
     <td style="font-size:13px;max-width:220px">${esc(w.comment)}</td>
     <td><div class="tags">${(w.parts||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[spareSt(w)]}">Parts</span>`:''}${(w.tools||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[toolSt(w)]}">Tools</span>`:''}</div></td>
     <td><input type="text" value="${esc(w.assignee)}" data-asg="${esc(w.no)}" placeholder="e.g. M-02, B1-01" size="12" ${ed?'':'disabled'} aria-label="Allocated to"></td>
-    <td><span class="tag ${w.progress==='Complete'?'ok':w.progress==='In progress'?'warn':w.progress==='Passed back'?'bad':''}">${esc(w.progress)}</span><div class="mono" style="font-size:11px;color:var(--muted);margin-top:3px">${when(w)}</div><div class="row" style="margin-top:6px;gap:6px">${btn(w)}</div></td>
+    <td><span class="tag ${isPaused(w)?'bad':w.progress==='Complete'?'ok':w.progress==='In progress'?'warn':w.progress==='Passed back'?'bad':''}">${isPaused(w)?'Paused':esc(w.progress)}</span><div class="mono" style="font-size:11px;color:var(--muted);margin-top:3px">${when(w)}</div><div class="row" style="margin-top:6px;gap:6px">${btn(w)}</div></td>
     ${TRADES.map(t=>`<td class="num">${w.hrs?.[t]?`<input type="number" step="0.25" min="0" value="${w.actual?.[t]??''}" placeholder="${fmt(w.hrs[t])}" data-act="${esc(w.no)}|${t}" ${ed&&w.progress!=='Not started'?'':'disabled'} aria-label="${t} actual hours">`:'–'}</td>`).join('')}
     <td style="white-space:nowrap"><button class="link" data-escfor="${esc(w.no)}">Escape</button></td></tr>`).join('')||`<tr><td colspan="${6+TRADES.length}"><div class="empty">No accepted work orders yet.</div></td></tr>`}
   </tbody></table></div></section>
@@ -473,10 +487,16 @@ function wire(){
     else if(t.id==='closePack'){const p=packById(curPack);if(t.dataset.armed){await closePack(p)}else{t.dataset.armed=1;t.textContent='Click again to confirm';setTimeout(()=>{if(t.isConnected){delete t.dataset.armed;t.textContent='Close work pack'}},3000)}}
     else if(d.rmwo){const w=woBy(d.rmwo),p=packById(w.pack_id);await upd('work_orders',w.no,{removed_v:p.version},`Removed ${w.no} (${w.title}) in v${p.version}`,p.id)}
     else if(d.start){const w=woBy(d.start);if(!w.assignee){const el=document.querySelector(`[data-asg="${w.no}"]`);if(el&&el.value.trim()){await upd('work_orders',w.no,{assignee:el.value.trim()})}else{toast('Allocate someone first');el&&el.focus();return}}
-      await upd('work_orders',w.no,{progress:'In progress',started_at:new Date().toISOString(),completed_at:null},`Started: ${w.title}${w.assignee?' ('+w.assignee+')':''}`,w.pack_id)}
-    else if(d.done){const w=woBy(d.done);await upd('work_orders',w.no,{progress:'Complete',completed_at:new Date().toISOString()},`Completed: ${w.title}${w.started_at?' in '+dur(w.started_at):''}`,w.pack_id);toast('Complete — add actual hours if different from plan')}
-    else if(d.pb){const w=woBy(d.pb);await upd('work_orders',w.no,{progress:'Passed back',completed_at:null},`Passed back to the line: ${w.title}`,w.pack_id)}
-    else if(d.reopen){const w=woBy(d.reopen);await upd('work_orders',w.no,{progress:'In progress',completed_at:null},`Reopened: ${w.title}`,w.pack_id)}
+      const now=new Date().toISOString();await upd('work_orders',w.no,{progress:'In progress',started_at:w.started_at||now,run_from:now,worked_min:Number(w.worked_min)||0,paused_at:null,pause_reason:null,completed_at:null},`Started: ${w.title}${w.assignee?' ('+w.assignee+')':''}`,w.pack_id)}
+    else if(d.pause){const w=woBy(d.pause),sel=document.querySelector(`[data-preason="${w.no}"]`),reason=sel?sel.value:'Other',now=new Date().toISOString();
+      await upd('work_orders',w.no,{paused_at:now,pause_reason:reason,worked_min:Math.round(workedMin(w)*10)/10,run_from:null,pause_log:[...(w.pause_log||[]),{reason,from:now,to:null}]},`Paused: ${w.title} — ${reason}`,w.pack_id)}
+    else if(d.resume){const w=woBy(d.resume),now=new Date().toISOString(),log=(w.pause_log||[]).map(x=>({...x}));if(log.length&&!log[log.length-1].to)log[log.length-1].to=now;
+      await upd('work_orders',w.no,{paused_at:null,pause_reason:null,run_from:now,pause_log:log},`Resumed: ${w.title} (paused ${fmtMin((Date.now()-new Date(w.paused_at))/60000)} — ${w.pause_reason||''})`,w.pack_id)}
+    else if(d.done||d.pb){const w=woBy(d.done||d.pb),now=new Date().toISOString(),log=(w.pause_log||[]).map(x=>({...x}));if(log.length&&!log[log.length-1].to)log[log.length-1].to=now;
+      const mins=Math.round(workedMin(w)*10)/10,done=!!d.done;
+      await upd('work_orders',w.no,{progress:done?'Complete':'Passed back',completed_at:done?now:null,worked_min:mins,run_from:null,paused_at:null,pause_reason:null,pause_log:log},done?`Completed: ${w.title} in ${fmtMin(mins)} working`:`Passed back to the line: ${w.title}`,w.pack_id);
+      if(done)toast('Complete — add actual hours if different from plan')}
+    else if(d.reopen){const w=woBy(d.reopen);await upd('work_orders',w.no,{progress:'In progress',completed_at:null,run_from:new Date().toISOString(),paused_at:null},`Reopened: ${w.title}`,w.pack_id)}
     else if(d.escfor){const w=woBy(d.escfor);escPrefill={pack:w.pack_id,ref:w.ref,detail:w.no+': '};go('escapes')}
   });
   V.addEventListener('change',async e=>{
