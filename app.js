@@ -263,6 +263,17 @@ function applyNewFilter(){
   box.innerHTML=shown.slice(0,LIM).map(t=>`<label><input type="checkbox" data-newtask="${esc(t.ref)}" ${newSel.has(t.ref)?'checked':''}><span><b class="mono" style="font-size:12px">${esc(t.ref)}</b>${t.ind?'':' <span class="tag warn">review</span>'}<br>${esc(t.title)}<br><span class="label">${TRADES.filter(x=>t.hrs[x]).map(x=>x+' '+fmt(t.hrs[x])+'h').join(' · ')}${(t.materials||[]).length?' · '+t.materials.length+' spare'+(t.materials.length>1?'s':''):''}</span></span></label>`).join('')||'<div class="empty">No tasks match. Try fewer words or another ATA chapter.</div>';
   $('newCount').textContent=`${shown.length} match${shown.length===1?'':'es'}${shown.length>LIM?` · showing first ${LIM}, refine the search`:''}`;
 }
+const floorFields=()=>role==='shiftlead'?{decision:'Accepted',comment:`Added on the floor by Shift lead${actor()?' ('+actor()+')':''}`}:{};
+function addWoSection(p){
+  const floor=role==='shiftlead';
+  return `<section class="card"><h3>Add work order${floor?'':' to v'+p.version}</h3>${floor?'<p class="sub">For work found on the floor. It goes straight onto this board as accepted, marked as added by the shift lead so the planner can see it.</p>':''}
+    <form class="form" id="addWoTask" style="margin-top:0">
+      <label style="grid-column:span 2"><span class="label">From the task database (type to search ${S.tasks.length} tasks)</span><input type="text" name="task" list="taskOpts" placeholder="e.g. MLG brake, OMP-32, DEMO-32A" autocomplete="off"><datalist id="taskOpts">${S.tasks.map(t=>`<option value="${esc(t.ref)} — ${esc(t.title)}"></option>`).join('')}</datalist></label>
+      <label><span class="label">Work order number</span><input type="text" name="woNo" placeholder="blank = auto" autocomplete="off"></label>
+      <div><button class="primary" type="submit">Add task</button></div></form>
+    <h3 style="margin-top:18px">Or add a manual work order</h3><p class="sub">Tools and spares entered here go straight to Tooling and Materials.</p>
+    <form class="form" id="addWoManual" style="margin-top:0">${manualFields()}<div><button class="primary" type="submit">Add manual work order</button></div></form></section>`;
+}
 function vPack(){
   const P=S.packs.slice().sort((a,b)=>(a.status==='Closed')-(b.status==='Closed')||a.start_date.localeCompare(b.start_date));
   if(!P.length)return `<div class="empty">No work packs yet. <button class="link" data-goto="new">Create one →</button></div>`;
@@ -300,13 +311,7 @@ function vPack(){
   <section class="card"><h3>Work orders</h3><p class="sub">Spares and tools status come live from Materials and Tooling. Decisions and notes go straight to the shift lead.</p>
   <div class="tablewrap"><table><thead><tr><th>WO</th><th>Task</th><th>Type</th>${TRADES.map(t=>`<th class="num">${t}</th>`).join('')}<th>Spares</th><th>Tools</th><th>Needs</th><th>Decision</th><th>Note for shift lead</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
 </section>
-  ${editable&&isCur?`<section class="card"><h3>Add work order to v${p.version}</h3>
-    <form class="form" id="addWoTask" style="margin-top:0">
-      <label style="grid-column:span 2"><span class="label">From the task database (type to search ${S.tasks.length} tasks)</span><input type="text" name="task" list="taskOpts" placeholder="e.g. MLG brake, OMP-32, DEMO-32A" autocomplete="off"><datalist id="taskOpts">${S.tasks.map(t=>`<option value="${esc(t.ref)} — ${esc(t.title)}"></option>`).join('')}</datalist></label>
-      <label><span class="label">Work order number</span><input type="text" name="woNo" placeholder="blank = auto" autocomplete="off"></label>
-      <div><button class="primary" type="submit">Add task</button></div></form>
-    <h3 style="margin-top:18px">Or add a manual work order</h3><p class="sub">Tools and spares entered here go straight to Tooling and Materials.</p>
-    <form class="form" id="addWoManual" style="margin-top:0">${manualFields()}<div><button class="primary" type="submit">Add manual work order</button></div></form></section>`:''}
+  ${editable&&isCur?addWoSection(p):''}
   ${editable?extraForm(counted(p),p.id):''}
   ${feed(p.id)}`;
 }
@@ -502,6 +507,7 @@ function vFloor(){
     ${TRADES.map(t=>`<td class="num">${w.hrs?.[t]?`<input type="number" step="0.25" min="0" value="${w.actual?.[t]??''}" placeholder="${fmt(w.hrs[t])}" data-act="${esc(w.no)}|${t}" ${ed&&w.progress!=='Not started'?'':'disabled'} aria-label="${t} actual hours">`:'–'}</td>`).join('')}
     <td style="white-space:nowrap">${ed&&w.progress!=='Complete'?`<button class="link" data-xsp="${esc(w.no)}">+ Spares</button><br>`:''}<button class="link" data-escfor="${esc(w.no)}">Escape</button></td></tr>`).join('')||`<tr><td colspan="${6+TRADES.length}"><div class="empty">No accepted work orders yet.</div></td></tr>`}
   </tbody></table></div></section>
+  ${p.status!=='Closed'?addWoSection(p):''}
   ${p.status!=='Closed'?extraForm(W.filter(w=>w.progress!=='Complete'),p.id):''}
   <div class="strip">${TRADES.map(t=>{const v=pl[t]?Math.round((act[t]-pl[t])/pl[t]*100):0;return `<div class="tile"><span class="label">${t} hours on completed jobs</span><span class="big">${fmt(act[t])} h</span><span class="meta">planned ${fmt(pl[t])} h ${pl[t]?`· <span class="tag ${Math.abs(v)<=5?'ok':v>0?'bad':'acc'}">${v>0?'+':''}${v}%</span>`:''}</span></div>`}).join('')}</div>
   ${feed(p.id)}`;
@@ -671,10 +677,10 @@ function wire(){
       else if(e.target.id==='addWoTask'){const p=packById(curPack),raw=(f.get('task')||'').trim(),ref=raw.split(' — ')[0].trim().toUpperCase(),t=taskByRef(ref);
         if(!t){toast('Pick a task from the list');return}
         const no=(f.get('woNo')||'').trim().toUpperCase().replace(/\s+/g,'')||rid('WO-',6);if(S.work_orders.some(w=>w.no===no)){toast(`${no} is already in use`);return}
-        await ins('work_orders',[{no,pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:stdParts(t),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}],`Added ${no} (${t.title}) to v${p.version}`,p.id);e.target.reset()}
+        await ins('work_orders',[{no,pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:stdParts(t),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''})),...floorFields()}],`Added ${no} (${t.title}) to ${p.id}${role==='shiftlead'?' on the floor':' v'+p.version}`,p.id);e.target.reset();toast(`${no} added`)}
       else if(e.target.id==='addWoManual'){const p=packById(curPack),r=manualFromForm(f);if(r.err){toast(r.err);return}
-        const row={...r.row,no:r.row.no||rid('WO-',6),pack_id:p.id,added_v:p.version};
-        await ins('work_orders',[row],`Added ${row.no} (${row.title}) to v${p.version}${row.parts.length?' with '+row.parts.length+' spares line'+(row.parts.length>1?'s':''):''}${row.tools.length?', '+row.tools.length+' tool'+(row.tools.length>1?'s':''):''}`,p.id);e.target.reset()}
+        const row={...r.row,no:r.row.no||rid('WO-',6),pack_id:p.id,added_v:p.version,...floorFields()};
+        await ins('work_orders',[row],`Added ${row.no} (${row.title}) to ${p.id}${role==='shiftlead'?' on the floor':' v'+p.version}${row.parts.length?' with '+row.parts.length+' spares line'+(row.parts.length>1?'s':''):''}${row.tools.length?', '+row.tools.length+' tool'+(row.tools.length>1?'s':''):''}`,p.id);e.target.reset();toast(`${row.no} added — tools and spares sent to Tooling and Materials`)}
       else if(e.target.id==='addWo'){const p=packById(curPack),ref=f.get('ref');let row;
         if(ref){const t=taskByRef(ref);row={no:rid('WO-',6),pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:stdParts(t),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}}
         else{const title=(f.get('title')||'').trim();if(!title){toast('Describe the ADF first');return}

@@ -7,7 +7,7 @@ A shared, multi-stakeholder production planning demo for aircraft maintenance wo
 | **Planner** | Create work packs by searching the task database and adding manual work orders (own work order numbers, tools and spares), accept / reject / G703 work orders, load new versions, track readiness, release to production, close out |
 | **Materials** | Set ordered quantity, stock status and ETA for every expected part; demand-cell freeze and stores collection sign-off |
 | **Tooling & GSE** | Mark tools and ground equipment available, booked, in calibration or U/S |
-| **Shift lead** | Assign work orders, update progress, record actual hours, raise escapes |
+| **Shift lead** | Allocate people, start / pause / complete jobs, record actual hours, add work orders found on the floor (with tools and spares), request extra spares, raise escapes |
 | **Management** | Trends from closed work packs: completion rate, hours vs plan by trade, escapes, on-time inputs |
 
 Every change appears on every open screen within a second or two and is logged in the activity feed.
