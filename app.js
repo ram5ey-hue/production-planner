@@ -90,10 +90,14 @@ function spareSt(w){const L=w.parts||[];if(!L.length)return 'none';
   if(L.some(l=>!['In stock','Kitted','Issued'].includes(l.stock)))return 'warn';return 'ok'}
 const openRequests=()=>S.work_orders.filter(w=>{const p=packById(w.pack_id);return p&&p.status!=='Closed'&&w.decision!=='Rejected'&&!(w.removed_v&&w.removed_v<=p.version)}).flatMap(w=>(w.parts||[]).map((l,i)=>({w,l,i}))).filter(x=>x.l.src==='extra'&&x.l.stock==='Requested');
 let xspPrefill=null;
-function extraForm(W){
-  if(!W.length)return '';
-  return `<section class="card" id="extraCard"><h3>Request extra spares</h3><p class="sub">For anything beyond the job's standard spares. It goes straight onto the Materials list, marked as an extra.</p>
-  <form class="form" id="extraForm" style="margin-top:0"><label><span class="label">Job</span><select name="wo">${W.map(w=>`<option value="${esc(w.no)}"${xspPrefill===w.no?' selected':''}>${esc(w.title)} · ${esc(w.no)}</option>`).join('')}</select></label>
+function extraForm(W,packId){
+  return `<section class="card" id="extraCard"><h3>Request extra spares</h3><p class="sub">Raise extras against a work order in this work pack. If the defect isn't on a work order yet, enter its new work order number and it's added to the pack as an ADF for the planner to accept.</p>
+  <form class="form" id="extraForm" data-pack="${esc(packId)}" style="margin-top:0">
+    <label><span class="label">Work order</span><select name="wo">${W.map(w=>`<option value="${esc(w.no)}"${xspPrefill===w.no?' selected':''}>${esc(w.no)} — ${esc(w.title)}</option>`).join('')}<option value="__new"${!W.length?' selected':''}>+ New work order (not in the pack yet)</option></select></label>
+    <div class="wide form" id="newWoFields" style="margin:0;padding:10px;border:1px dashed var(--line);border-radius:6px" ${W.length?'hidden':''}>
+      <label><span class="label">New work order number</span><input type="text" name="woNew" placeholder="e.g. WO-480200" autocomplete="off"></label>
+      <label style="grid-column:span 2"><span class="label">Defect / task description</span><input type="text" name="woDesc" placeholder="e.g. Hydraulic seep at LH flap actuator"></label>
+    </div>
     <label><span class="label">Part number</span><input type="text" name="pn" required placeholder="e.g. DEMO-SEAL-0000"></label>
     <label><span class="label">Qty</span><input type="number" name="qty" value="1" min="1" required></label>
     <label class="wide"><span class="label">Reason</span><input type="text" name="reason" required placeholder="e.g. seal damaged on removal"></label>
@@ -241,7 +245,7 @@ function vPack(){
     <label><span class="label">ADF description</span><input type="text" name="title" placeholder="e.g. ADF: Panel fastener missing"></label>
     ${TRADES.map(t=>`<label><span class="label">ADF ${t} h</span><input type="number" step="0.5" min="0" name="h${t}" value="0"></label>`).join('')}
     <div><button class="primary" type="submit">Add to v${p.version}</button></div></form>`:''}</section>
-  ${editable?extraForm(counted(p)):''}
+  ${editable?extraForm(counted(p),p.id):''}
   ${feed(p.id)}`;
 }
 
@@ -353,9 +357,9 @@ function vMat(){
   const srcTag=l=>l.src==='extra'?`<span class="tag acc" title="${esc(l.reason||'')}">Extra</span>`:'<span class="tag">Standard</span>';
   return `<section class="card"><div class="row spread"><div><h2>Parts queue</h2><p class="sub" style="margin:0">Standard spares come from the task database when a job is added. Extras are requested by the planner or shift lead against a job.</p></div>${packSelect(P,p.id)}</div></section>
   <section class="card" style="${R.length?'border-color:var(--accent)':''}"><h3>Extra spares requests ${R.length?`<span class="status Planning">${R.length} new</span>`:''}</h3>
-  ${R.length?`<div class="tablewrap"><table><thead><tr><th>Requested</th><th>Part number</th><th class="num">Qty</th><th>Job</th><th>Reason</th><th>Status</th></tr></thead><tbody>
-    ${R.map(({w,l,i})=>{const pk=packById(w.pack_id);return `<tr><td class="mono" style="font-size:12px">${l.at?ago(l.at):''}<div style="color:var(--muted)">${esc(ROLES[l.by]?.name||l.by||'')}${l.actor?' · '+esc(l.actor):''}</div></td><td class="mono">${esc(l.pn)}</td><td class="num">${l.qty}</td>
-      <td>${esc(w.title)}<div class="mono" style="font-size:11px;color:var(--muted)">${esc(pk.ac)} · ${esc(w.no)}</div></td><td>${esc(l.reason||'')}</td><td>${stSel(`data-ps="${esc(w.no)}|${i}"`,l.stock)}</td></tr>`}).join('')}
+  ${R.length?`<div class="tablewrap"><table><thead><tr><th>Work order</th><th>Part number</th><th class="num">Qty</th><th>Reason</th><th>Requested</th><th>Status</th></tr></thead><tbody>
+    ${R.map(({w,l,i})=>{const pk=packById(w.pack_id);return `<tr><td><b class="mono">${esc(w.no)}</b>${w.decision==='Pending'?' <span class="tag warn">awaiting planner</span>':''}<div style="font-size:12px;color:var(--muted)">${esc(w.title)}<br>${esc(pk.ac)} · ${esc(pk.id)}</div></td><td class="mono">${esc(l.pn)}</td><td class="num">${l.qty}</td>
+      <td>${esc(l.reason||'')}</td><td class="mono" style="font-size:12px">${l.at?ago(l.at):''}<div style="color:var(--muted)">${esc(ROLES[l.by]?.name||l.by||'')}${l.actor?' · '+esc(l.actor):''}</div></td><td>${stSel(`data-ps="${esc(w.no)}|${i}"`,l.stock)}</td></tr>`}).join('')}
   </tbody></table></div>`:'<div class="empty">No outstanding extra requests.</div>'}</section>
   <div class="strip">
     <div class="tile"><span class="label">Part lines · ${esc(p.ac)}</span><span class="big">${lines.length}</span><span class="meta">${groups.length} part numbers · ${dShort(p.start_date)}</span></div>
@@ -365,18 +369,18 @@ function vMat(){
     <div class="tile"><span class="label">Sign-off</span>${myChecks.map(([k,l])=>`<label class="row" style="font-size:14px"><input type="checkbox" data-chk="${p.id}|${k}" ${(p.checks||{})[k]?'checked':''}> ${esc(l)}</label>`).join('')}</div>
   </div>
   <section class="card"><h3>Collection list — ${esc(p.ac)} · ${esc(p.check_type)}</h3><p class="sub">Every part needed for this work pack, totalled by part number. Setting a status here updates every job that uses that part.</p>
-  ${groups.length?`<div class="tablewrap"><table><thead><tr><th>Part number</th><th class="num">Total qty</th><th>For</th><th>Status</th></tr></thead><tbody>
+  ${groups.length?`<div class="tablewrap"><table><thead><tr><th>Part number</th><th class="num">Total qty</th><th>Work orders</th><th>Status</th></tr></thead><tbody>
     ${groups.map(g=>{const mixed=g.st.size>1,cur=[...g.st][0];return `<tr><td class="mono">${esc(g.pn)} ${g.extra?'<span class="tag acc">incl. extra</span>':''}</td><td class="num"><b>${g.qty}</b></td>
-      <td style="font-size:13px">${g.jobs.map(x=>`${esc(x.w.title)} <span class="mono" style="color:var(--muted)">×${x.l.qty}</span>`).join('<br>')}</td>
+      <td style="font-size:13px">${g.jobs.map(x=>`<b class="mono">${esc(x.w.no)}</b> ×${x.l.qty}${x.l.src==='extra'?' <span class="tag acc">extra</span>':''} <span style="color:var(--muted)">${esc(x.w.title)}</span>`).join('<br>')}</td>
       <td>${stSel(`data-pnst="${esc(p.id)}|${esc(g.pn)}"`,cur,mixed)}</td></tr>`}).join('')}
   </tbody></table></div>`:'<div class="empty">No spares on this work pack.</div>'}</section>
-  <section class="card"><h3>By job</h3>
+  <section class="card"><h3>By work order</h3>
   ${W.length?`<div class="tablewrap"><table><thead><tr><th>Part number</th><th>Source</th><th class="num">Standard</th><th class="num">Qty</th><th>Status</th><th>ETA</th></tr></thead><tbody>
     ${W.map(w=>`<tr style="background:var(--bg)"><td colspan="6"><b class="mono">${esc(w.no)}</b> · ${esc(w.title)} ${stTag(spareSt(w))}</td></tr>`+w.parts.map((l,i)=>`<tr><td class="mono">${esc(l.pn)}</td><td>${srcTag(l)}${l.src==='extra'&&l.reason?`<div style="font-size:12px;color:var(--muted)">${esc(l.reason)}</div>`:''}</td><td class="num">${l.exp??'–'}</td>
       <td class="num"><input type="number" min="0" value="${l.qty}" data-pq="${esc(w.no)}|${i}" aria-label="Quantity">${l.exp!=null&&Number(l.qty)<Number(l.exp)?` <span class="tag bad">Short ${l.exp-l.qty}</span>`:''}</td>
       <td>${stSel(`data-ps="${esc(w.no)}|${i}"`,l.stock)}</td><td><input type="date" value="${l.eta||''}" data-pe="${esc(w.no)}|${i}" aria-label="ETA"></td></tr>`).join('')).join('')}
   </tbody></table></div>`:'<div class="empty">No spares on this work pack.</div>'}
-  <form class="form" id="addPart"><label><span class="label">Add part to job</span><select name="wo">${counted(p).map(w=>`<option value="${esc(w.no)}">${esc(w.title)} · ${esc(w.no)}</option>`).join('')}</select></label>
+  <form class="form" id="addPart"><label><span class="label">Add part to work order</span><select name="wo">${counted(p).map(w=>`<option value="${esc(w.no)}">${esc(w.no)} — ${esc(w.title)}</option>`).join('')}</select></label>
     <label><span class="label">Part number</span><input type="text" name="pn" required placeholder="DEMO-XXX-0000"></label><label><span class="label">Qty</span><input type="number" name="qty" value="1" min="1"></label><div><button class="primary" type="submit">Add line</button></div></form></section>
   ${feed(p.id)}`;
 }
@@ -435,7 +439,7 @@ function vFloor(){
     ${TRADES.map(t=>`<td class="num">${w.hrs?.[t]?`<input type="number" step="0.25" min="0" value="${w.actual?.[t]??''}" placeholder="${fmt(w.hrs[t])}" data-act="${esc(w.no)}|${t}" ${ed&&w.progress!=='Not started'?'':'disabled'} aria-label="${t} actual hours">`:'–'}</td>`).join('')}
     <td style="white-space:nowrap">${ed&&w.progress!=='Complete'?`<button class="link" data-xsp="${esc(w.no)}">+ Spares</button><br>`:''}<button class="link" data-escfor="${esc(w.no)}">Escape</button></td></tr>`).join('')||`<tr><td colspan="${6+TRADES.length}"><div class="empty">No accepted work orders yet.</div></td></tr>`}
   </tbody></table></div></section>
-  ${ed?extraForm(W.filter(w=>w.progress!=='Complete')):''}
+  ${p.status!=='Closed'?extraForm(W.filter(w=>w.progress!=='Complete'),p.id):''}
   <div class="strip">${TRADES.map(t=>{const v=pl[t]?Math.round((act[t]-pl[t])/pl[t]*100):0;return `<div class="tile"><span class="label">${t} hours on completed jobs</span><span class="big">${fmt(act[t])} h</span><span class="meta">planned ${fmt(pl[t])} h ${pl[t]?`· <span class="tag ${Math.abs(v)<=5?'ok':v>0?'bad':'acc'}">${v>0?'+':''}${v}%</span>`:''}</span></div>`}).join('')}</div>
   ${feed(p.id)}`;
 }
@@ -557,6 +561,7 @@ function wire(){
   });
   V.addEventListener('change',async e=>{
     const t=e.target,d=t.dataset;
+    if(t.name==='wo'&&t.form&&t.form.id==='extraForm'){$('newWoFields').hidden=t.value!=='__new';if(t.value==='__new')t.form.querySelector('[name=woNew]').focus();return}
     if(t.id==='packSel'){curPack=t.value;curVer=null;render();return}
     if(t.id==='verSel'){curVer=+t.value;render();return}
     if(d.newtask){t.checked?newSel.add(d.newtask):newSel.delete(d.newtask);render();return}
@@ -594,9 +599,18 @@ function wire(){
         else{const title=(f.get('title')||'').trim();if(!title){toast('Describe the ADF first');return}
           const hrs={};TRADES.forEach(t=>hrs[t]=Number(f.get('h'+t))||0);row={no:rid('WO-',6),pack_id:p.id,ref:null,type:'ADF',title:/^ADF/i.test(title)?title:'ADF: '+title,hrs,flags:{},added_v:p.version}}
         await ins('work_orders',[row],`Added ${row.no} (${row.title}) to v${p.version}`,p.id)}
-      else if(e.target.id==='extraForm'){const no=f.get('wo'),w=woBy(no),pn=f.get('pn').trim().toUpperCase(),qty=Number(f.get('qty'))||1,reason=f.get('reason').trim();
-        const arr=[...(w.parts||[]),{pn,exp:null,qty,stock:'Requested',eta:null,src:'extra',reason,by:role,actor:actor()||null,at:new Date().toISOString()}];
-        if(await upd('work_orders',no,{parts:arr},`Extra spares requested: ${qty} × ${pn} for ${w.title} — ${reason}`,w.pack_id)){xspPrefill=null;toast('Request sent to Materials')}}
+      else if(e.target.id==='extraForm'){const pk=packById(e.target.dataset.pack),pn=f.get('pn').trim().toUpperCase(),qty=Number(f.get('qty'))||1,reason=f.get('reason').trim();
+        const line={pn,exp:null,qty,stock:'Requested',eta:null,src:'extra',reason,by:role,actor:actor()||null,at:new Date().toISOString()};
+        let no=f.get('wo');
+        if(no==='__new'){no=(f.get('woNew')||'').trim().toUpperCase().replace(/\s+/g,'');const desc=(f.get('woDesc')||'').trim();
+          if(!no||!desc){toast('Enter the new work order number and a description');return}
+          const ex=woBy(no);
+          if(ex&&ex.pack_id!==pk.id){toast(`${no} already belongs to ${ex.pack_id}`);return}
+          if(!ex){const row={no,pack_id:pk.id,ref:null,type:'ADF',title:/^ADF/i.test(desc)?desc:'ADF: '+desc,hrs:{Mech:0,B1:0,B2:0},flags:{},added_v:pk.version,decision:'Pending',comment:`Raised by ${ROLES[role].name}${actor()?' ('+actor()+')':''} with extra spares`,parts:[line]};
+            if(await ins('work_orders',[row],`New work order ${no} raised (${row.title}) with ${qty} × ${pn} — awaiting planner decision`,pk.id)){xspPrefill=no;e.target.reset();if($('newWoFields'))$('newWoFields').hidden=true;toast(`${no} added to ${pk.id} and spares sent to Materials`)}
+            return}}
+        const w=woBy(no);
+        if(await upd('work_orders',no,{parts:[...(w.parts||[]),line]},`Extra spares on ${no}: ${qty} × ${pn} — ${reason}`,w.pack_id)){xspPrefill=no;e.target.reset();if($('newWoFields'))$('newWoFields').hidden=true;toast(`Request sent to Materials against ${no}`)}}
       else if(e.target.id==='addPart'){const no=f.get('wo'),w=woBy(no);const arr=[...(w.parts||[]),{pn:f.get('pn').trim().toUpperCase(),exp:null,qty:Number(f.get('qty'))||1,stock:'Requested',eta:null,src:'extra',reason:'Added by Materials',by:role,at:new Date().toISOString()}];
         await upd('work_orders',no,{parts:arr},`Added part ${f.get('pn').trim()} to ${no}`,w.pack_id)}
       else if(e.target.id==='escForm'){await ins('escapes',[{pack_id:f.get('pack')||null,ref:f.get('ref')||null,raised_by:f.get('by'),type:f.get('type'),detail:f.get('detail'),action:f.get('action')||''}],`Escape logged: ${f.get('type')}`,f.get('pack')||null);escPrefill=null;toast('Escape logged')}
