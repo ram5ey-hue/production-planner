@@ -363,9 +363,9 @@ function vFloor(){
     <td style="font-size:13px;max-width:220px">${esc(w.comment)}</td>
     <td><div class="tags">${(w.parts||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[spareSt(w)]}">Parts</span>`:''}${(w.tools||[]).length?`<span class="chk ${({ok:'ok',warn:'thin',bad:'miss'})[toolSt(w)]}">Tools</span>`:''}</div></td>
     <td><input type="text" value="${esc(w.assignee)}" data-asg="${esc(w.no)}" placeholder="e.g. M-02, B1-01" size="12" ${ed?'':'disabled'} aria-label="Allocated to"></td>
-    <td><span class="tag ${w.progress==='Complete'?'ok':w.progress==='In progress'?'warn':w.progress==='Passed back'?'bad':''}">${esc(w.progress)}</span><div class="mono" style="font-size:11px;color:var(--muted);margin-top:3px">${when(w)}</div></td>
+    <td><span class="tag ${w.progress==='Complete'?'ok':w.progress==='In progress'?'warn':w.progress==='Passed back'?'bad':''}">${esc(w.progress)}</span><div class="mono" style="font-size:11px;color:var(--muted);margin-top:3px">${when(w)}</div><div class="row" style="margin-top:6px;gap:6px">${btn(w)}</div></td>
     ${TRADES.map(t=>`<td class="num">${w.hrs?.[t]?`<input type="number" step="0.25" min="0" value="${w.actual?.[t]??''}" placeholder="${fmt(w.hrs[t])}" data-act="${esc(w.no)}|${t}" ${ed&&w.progress!=='Not started'?'':'disabled'} aria-label="${t} actual hours">`:'–'}</td>`).join('')}
-    <td style="white-space:nowrap">${btn(w)} <button class="link" data-escfor="${esc(w.no)}">Escape</button></td></tr>`).join('')||`<tr><td colspan="${6+TRADES.length}"><div class="empty">No accepted work orders yet.</div></td></tr>`}
+    <td style="white-space:nowrap"><button class="link" data-escfor="${esc(w.no)}">Escape</button></td></tr>`).join('')||`<tr><td colspan="${6+TRADES.length}"><div class="empty">No accepted work orders yet.</div></td></tr>`}
   </tbody></table></div></section>
   <div class="strip">${TRADES.map(t=>{const v=pl[t]?Math.round((act[t]-pl[t])/pl[t]*100):0;return `<div class="tile"><span class="label">${t} hours on completed jobs</span><span class="big">${fmt(act[t])} h</span><span class="meta">planned ${fmt(pl[t])} h ${pl[t]?`· <span class="tag ${Math.abs(v)<=5?'ok':v>0?'bad':'acc'}">${v>0?'+':''}${v}%</span>`:''}</span></div>`}).join('')}</div>
   ${feed(p.id)}`;
