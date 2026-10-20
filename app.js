@@ -218,11 +218,14 @@ function taskMatches(t,F){
   const hay=(t.ref+' '+t.title+' '+(t.materials||[]).map(m=>m.pn).join(' ')+' '+(t.tooling||[]).join(' ')).toLowerCase();
   return F.q.toLowerCase().split(/\s+/).filter(Boolean).every(w=>hay.includes(w));
 }
+function rankTasks(list,q){q=(q||'').trim().toLowerCase();if(!q)return list;
+  const score=t=>{const ti=t.title.toLowerCase(),r=t.ref.toLowerCase();return r===q?0:ti.includes(q)?1:r.startsWith(q)?2:3};
+  return list.map(t=>[score(t),t]).sort((a,b)=>a[0]-b[0]||a[1].ref.localeCompare(b[1].ref)).map(x=>x[1])}
 function vNew(){
   const today=newDraft.start||isoOf(addDays(T0,7)),D=newDraft,F=newFilter;
   const list=S.tasks.slice().sort((a,b)=>a.ref.localeCompare(b.ref));
   const atas=[...new Set(list.map(t=>ataOf(t.ref)))].sort();
-  const shown=list.filter(t=>taskMatches(t,F)),LIM=150;
+  const shown=rankTasks(list.filter(t=>taskMatches(t,F)),F.q),LIM=150;
   const sel=list.filter(t=>newSel.has(t.ref));const h={Mech:0,B1:0,B2:0};
   sel.forEach(t=>TRADES.forEach(x=>h[x]+=Number(t.hrs[x])||0));newManual.forEach(m=>TRADES.forEach(x=>h[x]+=Number(m.hrs[x])||0));
   const total=sel.length+newManual.length;
@@ -255,7 +258,7 @@ function vNew(){
 }
 function applyNewFilter(){
   // filter in place so typing in the search box never loses focus
-  const list=S.tasks.slice().sort((a,b)=>a.ref.localeCompare(b.ref)),shown=list.filter(t=>taskMatches(t,newFilter)),LIM=150;
+  const list=S.tasks.slice().sort((a,b)=>a.ref.localeCompare(b.ref)),shown=rankTasks(list.filter(t=>taskMatches(t,newFilter)),newFilter.q),LIM=150;
   const box=document.querySelector('.tasklist');if(!box)return;
   box.innerHTML=shown.slice(0,LIM).map(t=>`<label><input type="checkbox" data-newtask="${esc(t.ref)}" ${newSel.has(t.ref)?'checked':''}><span><b class="mono" style="font-size:12px">${esc(t.ref)}</b>${t.ind?'':' <span class="tag warn">review</span>'}<br>${esc(t.title)}<br><span class="label">${TRADES.filter(x=>t.hrs[x]).map(x=>x+' '+fmt(t.hrs[x])+'h').join(' · ')}${(t.materials||[]).length?' · '+t.materials.length+' spare'+(t.materials.length>1?'s':''):''}</span></span></label>`).join('')||'<div class="empty">No tasks match. Try fewer words or another ATA chapter.</div>';
   $('newCount').textContent=`${shown.length} match${shown.length===1?'':'es'}${shown.length>LIM?` · showing first ${LIM}, refine the search`:''}`;
