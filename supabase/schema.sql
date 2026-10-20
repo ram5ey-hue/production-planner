@@ -51,6 +51,11 @@ create table if not exists work_orders (
 -- for databases created before these columns existed
 alter table work_orders add column if not exists started_at timestamptz;
 alter table work_orders add column if not exists completed_at timestamptz;
+alter table work_orders add column if not exists run_from timestamptz;
+alter table work_orders add column if not exists worked_min numeric not null default 0;
+alter table work_orders add column if not exists paused_at timestamptz;
+alter table work_orders add column if not exists pause_reason text;
+alter table work_orders add column if not exists pause_log jsonb not null default '[]';
 create index if not exists work_orders_pack on work_orders(pack_id);
 
 create table if not exists escapes (
