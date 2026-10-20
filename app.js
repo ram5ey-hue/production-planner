@@ -38,7 +38,7 @@ const rid=(p,n)=>p+Math.floor(10**(n-1)+Math.random()*9*10**(n-1));
 
 /* ---------- state ---------- */
 const S={tasks:[],packs:[],work_orders:[],escapes:[],handover:[],history:[],roster:[],activity:[]};
-let sb=null, ready=false, role=ls.get('pp.role')||'planner', view=null, curPack=null, curVer=null, taskFilter='', escPrefill=null, newSel=new Set(), newDraft={};
+let sb=null, ready=false, role=ls.get('pp.role')||'planner', view=null, curPack=null, curVer=null, taskFilter='', escPrefill=null, newSel=new Set(), newDraft={}, newFilter={q:'',ata:'',selOnly:false}, newWoNos={}, newManual=[];
 const hashRole=location.hash.slice(1); if(ROLES[hashRole]) role=hashRole;
 view=ROLES[role].tabs[0][0];
 
@@ -188,23 +188,78 @@ function vRegister(){
   ${feed()}</div>`;
 }
 
+const ataOf=ref=>(String(ref||'').split('-')[1]||'');
+const parseSpares=txt=>String(txt||'').split('\n').map(x=>x.trim()).filter(Boolean).map(x=>{const [pn,q]=x.split(/[,×x*]\s*(?=\d+\s*$)/);return {pn:(pn||x).replace(/,\s*$/,'').trim().toUpperCase(),qty:Number(q)||1}});
+const parseTools=txt=>String(txt||'').split('\n').map(x=>x.trim()).filter(Boolean);
+function manualFields(){
+  return `<label><span class="label">Work order number</span><input type="text" name="mNo" placeholder="e.g. WO-480300 (blank = auto)" autocomplete="off"></label>
+    <label><span class="label">Type</span><select name="mType"><option value="ADF">ADF / defect</option><option value="OMP">Task not in database</option></select></label>
+    <label style="grid-column:span 2"><span class="label">Description</span><input type="text" name="mTitle" placeholder="e.g. Hydraulic seep at LH flap actuator"></label>
+    ${TRADES.map(t=>`<label><span class="label">${t} hours</span><input type="number" step="0.5" min="0" name="m${t}" value="0"></label>`).join('')}
+    <div class="wide"><span class="label">Needs</span><div class="authpick row" style="gap:10px;margin-top:4px">${FLAGS.map(([k,l])=>`<label class="row" style="gap:4px;font-size:13px"><input type="checkbox" name="mf_${k}">${l}</label>`).join('')}</div></div>
+    <label style="grid-column:span 2"><span class="label">Tools / GSE required (one per line)</span><textarea name="mTools" rows="3" placeholder="Torque wrench 200-800 Nm&#10;Access platform"></textarea></label>
+    <label style="grid-column:span 2"><span class="label">Spares required (one per line: part number, qty)</span><textarea name="mSpares" rows="3" placeholder="DEMO-SEAL-1234, 2&#10;DEMO-FST-0001, 6"></textarea></label>`;
+}
+function manualFromForm(f){
+  const title=(f.get('mTitle')||'').trim();if(!title)return {err:'Add a description for the work order'};
+  let no=(f.get('mNo')||'').trim().toUpperCase().replace(/\s+/g,'');
+  if(no&&(S.work_orders.some(w=>w.no===no)||newManual.some(m=>m.no===no)||Object.values(newWoNos).includes(no)))return {err:`${no} is already in use`};
+  const hrs={};TRADES.forEach(t=>hrs[t]=Number(f.get('m'+t))||0);
+  const flags={};FLAGS.forEach(([k])=>{if(f.get('mf_'+k))flags[k]=1});
+  const type=f.get('mType')==='OMP'?'OMP':'ADF';
+  return {row:{no:no||null,ref:null,type,title:type==='ADF'&&!/^ADF/i.test(title)?'ADF: '+title:title,hrs,flags,
+    parts:parseSpares(f.get('mSpares')).map(m=>({pn:m.pn,exp:m.qty,qty:m.qty,stock:'Requested',eta:null,src:'standard'})),
+    tools:parseTools(f.get('mTools')).map(n=>({name:n,status:'Not checked',note:''}))}};
+}
+function taskMatches(t,F){
+  if(F.ata&&ataOf(t.ref)!==F.ata)return false;
+  if(F.selOnly&&!newSel.has(t.ref))return false;
+  if(!F.q)return true;
+  const hay=(t.ref+' '+t.title+' '+(t.materials||[]).map(m=>m.pn).join(' ')+' '+(t.tooling||[]).join(' ')).toLowerCase();
+  return F.q.toLowerCase().split(/\s+/).filter(Boolean).every(w=>hay.includes(w));
+}
 function vNew(){
-  const today=newDraft.start||isoOf(addDays(T0,7)),D=newDraft;
+  const today=newDraft.start||isoOf(addDays(T0,7)),D=newDraft,F=newFilter;
   const list=S.tasks.slice().sort((a,b)=>a.ref.localeCompare(b.ref));
-  const sel=list.filter(t=>newSel.has(t.ref));const h={Mech:0,B1:0,B2:0};sel.forEach(t=>TRADES.forEach(x=>h[x]+=Number(t.hrs[x])||0));
-  return `<section class="card"><h2>New work pack</h2><p class="sub">Load the work pack summary from short-term planning. OMP tasks pull hours, tooling, spares and flags from the task database. ADFs can be added on the work pack screen afterwards.</p>
+  const atas=[...new Set(list.map(t=>ataOf(t.ref)))].sort();
+  const shown=list.filter(t=>taskMatches(t,F)),LIM=150;
+  const sel=list.filter(t=>newSel.has(t.ref));const h={Mech:0,B1:0,B2:0};
+  sel.forEach(t=>TRADES.forEach(x=>h[x]+=Number(t.hrs[x])||0));newManual.forEach(m=>TRADES.forEach(x=>h[x]+=Number(m.hrs[x])||0));
+  const total=sel.length+newManual.length;
+  return `<section class="card"><h2>New work pack</h2><p class="sub">Load the work pack summary from short-term planning. Search the task database for OMP tasks, give each its work order number, and add any manual work orders.</p>
   <form class="form" id="newForm" style="margin-top:0">
     <label><span class="label">Aircraft</span><input type="text" name="ac" required placeholder="e.g. A05" maxlength="12" value="${esc(D.ac||'')}"></label>
     <label><span class="label">Check type</span><input type="text" name="check" required placeholder="e.g. Base check (6M)" list="checkTypes" value="${esc(D.check||'')}"><datalist id="checkTypes"><option>Weekly check</option><option>Base check (6M)</option><option>Base check (12M)</option><option>Out-of-phase tasks</option></datalist></label>
     <label><span class="label">Input starts</span><input type="date" name="start" value="${today}" required></label>
     <label><span class="label">Days</span><input type="number" name="days" value="${esc(D.days||3)}" min="1" max="60" required></label>
-    <div class="wide"><div class="row spread" style="margin-bottom:6px"><span class="label">OMP tasks in this work pack (${sel.length} selected)</span><span class="row"><button type="button" id="selAll">Select all</button><button type="button" id="selNone">Clear</button></span></div>
-      <div class="tasklist">${list.map(t=>`<label><input type="checkbox" data-newtask="${esc(t.ref)}" ${newSel.has(t.ref)?'checked':''}><span><b class="mono" style="font-size:12px">${esc(t.ref)}</b><br>${esc(t.title)}<br><span class="label">${TRADES.filter(x=>t.hrs[x]).map(x=>x+' '+fmt(t.hrs[x])+'h').join(' · ')}</span></span></label>`).join('')||'<div class="empty">The task database is empty.</div>'}</div></div>
-    <div class="wide">${hrsBlock(h)}</div>
-    <div><button class="primary" type="submit">Create work pack</button></div>
-  </form></section>`;
+  </form></section>
+  <section class="card"><div class="row spread"><h3 style="margin:0">OMP tasks <span class="label">${list.length} in database</span></h3><span class="row"><button type="button" id="selShown">Select all shown</button><button type="button" id="selNone">Clear selection</button></span></div>
+    <div class="row" style="margin:10px 0">
+      <input type="search" id="newSearch" placeholder="Search ref, title, part number or tool — e.g. MLG brake" value="${esc(F.q)}" style="flex:1 1 260px" aria-label="Search tasks">
+      <select id="newAta" aria-label="ATA chapter"><option value="">All ATA chapters</option>${atas.map(a=>`<option value="${a}"${F.ata===a?' selected':''}>ATA ${a}</option>`).join('')}</select>
+      <label class="row" style="gap:4px;font-size:13px"><input type="checkbox" id="newSelOnly" ${F.selOnly?'checked':''}> Selected only</label>
+    </div>
+    <p class="label" id="newCount" style="margin:0 0 6px">${shown.length} match${shown.length===1?'':'es'}${shown.length>LIM?` · showing first ${LIM}, refine the search`:''}</p>
+    <div class="tasklist">${shown.slice(0,LIM).map(t=>`<label><input type="checkbox" data-newtask="${esc(t.ref)}" ${newSel.has(t.ref)?'checked':''}><span><b class="mono" style="font-size:12px">${esc(t.ref)}</b>${t.ind?'':' <span class="tag warn">review</span>'}<br>${esc(t.title)}<br><span class="label">${TRADES.filter(x=>t.hrs[x]).map(x=>x+' '+fmt(t.hrs[x])+'h').join(' · ')}${(t.materials||[]).length?' · '+t.materials.length+' spare'+(t.materials.length>1?'s':''):''}</span></span></label>`).join('')||'<div class="empty">No tasks match. Try fewer words or another ATA chapter.</div>'}</div>
+  </section>
+  <section class="card"><h3>Manual work order</h3><p class="sub">For defects (ADFs) and anything not in the task database. Tools and spares entered here go straight to Tooling and Materials when the pack is created.</p>
+    <form class="form" id="manualNew" style="margin-top:0">${manualFields()}<div><button type="submit">Add to this work pack</button></div></form></section>
+  <section class="card"><h3>Work orders in this pack (${total})</h3>
+    ${total?`<div class="tablewrap"><table><thead><tr><th>Work order number</th><th>Task</th>${TRADES.map(t=>`<th class="num">${t}</th>`).join('')}<th>Tools</th><th>Spares</th><th></th></tr></thead><tbody>
+      ${sel.map(t=>`<tr><td><input type="text" data-newwo="${esc(t.ref)}" value="${esc(newWoNos[t.ref]||'')}" placeholder="auto" size="12" aria-label="Work order number for ${esc(t.ref)}"></td><td>${esc(t.title)}<div class="mono" style="font-size:11px;color:var(--muted)">${esc(t.ref)}</div></td>${TRADES.map(x=>`<td class="num">${t.hrs[x]?fmt(t.hrs[x]):'–'}</td>`).join('')}<td style="font-size:12px">${(t.tooling||[]).map(esc).join('<br>')||'–'}</td><td class="mono" style="font-size:12px">${(t.materials||[]).map(m=>esc(m.pn)+' ×'+m.qty).join('<br>')||'–'}</td><td><button class="link" data-unsel="${esc(t.ref)}">Remove</button></td></tr>`).join('')}
+      ${newManual.map((m,i)=>`<tr><td class="mono">${esc(m.no||'auto')}</td><td>${esc(m.title)} <span class="tag acc">${m.type==='ADF'?'ADF':'Manual'}</span></td>${TRADES.map(x=>`<td class="num">${m.hrs[x]?fmt(m.hrs[x]):'–'}</td>`).join('')}<td style="font-size:12px">${m.tools.map(x=>esc(x.name)).join('<br>')||'–'}</td><td class="mono" style="font-size:12px">${m.parts.map(x=>esc(x.pn)+' ×'+x.qty).join('<br>')||'–'}</td><td><button class="link" data-unman="${i}">Remove</button></td></tr>`).join('')}
+    </tbody></table></div>`:'<div class="empty">Tick tasks above or add a manual work order.</div>'}
+    <div style="margin-top:12px">${hrsBlock(h)}</div>
+    <div class="row" style="margin-top:12px"><button class="primary" id="createPack">Create work pack with ${total} work order${total===1?'':'s'}</button></div>
+  </section>`;
 }
-
+function applyNewFilter(){
+  // filter in place so typing in the search box never loses focus
+  const list=S.tasks.slice().sort((a,b)=>a.ref.localeCompare(b.ref)),shown=list.filter(t=>taskMatches(t,newFilter)),LIM=150;
+  const box=document.querySelector('.tasklist');if(!box)return;
+  box.innerHTML=shown.slice(0,LIM).map(t=>`<label><input type="checkbox" data-newtask="${esc(t.ref)}" ${newSel.has(t.ref)?'checked':''}><span><b class="mono" style="font-size:12px">${esc(t.ref)}</b>${t.ind?'':' <span class="tag warn">review</span>'}<br>${esc(t.title)}<br><span class="label">${TRADES.filter(x=>t.hrs[x]).map(x=>x+' '+fmt(t.hrs[x])+'h').join(' · ')}${(t.materials||[]).length?' · '+t.materials.length+' spare'+(t.materials.length>1?'s':''):''}</span></span></label>`).join('')||'<div class="empty">No tasks match. Try fewer words or another ATA chapter.</div>';
+  $('newCount').textContent=`${shown.length} match${shown.length===1?'':'es'}${shown.length>LIM?` · showing first ${LIM}, refine the search`:''}`;
+}
 function vPack(){
   const P=S.packs.slice().sort((a,b)=>(a.status==='Closed')-(b.status==='Closed')||a.start_date.localeCompare(b.start_date));
   if(!P.length)return `<div class="empty">No work packs yet. <button class="link" data-goto="new">Create one →</button></div>`;
@@ -241,10 +296,14 @@ function vPack(){
   </div>
   <section class="card"><h3>Work orders</h3><p class="sub">Spares and tools status come live from Materials and Tooling. Decisions and notes go straight to the shift lead.</p>
   <div class="tablewrap"><table><thead><tr><th>WO</th><th>Task</th><th>Type</th>${TRADES.map(t=>`<th class="num">${t}</th>`).join('')}<th>Spares</th><th>Tools</th><th>Needs</th><th>Decision</th><th>Note for shift lead</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-  ${editable&&isCur?`<form class="form" id="addWo"><label><span class="label">Add work order</span><select name="ref"><option value="">ADF (non-routine)</option>${taskOpts}</select></label>
-    <label><span class="label">ADF description</span><input type="text" name="title" placeholder="e.g. ADF: Panel fastener missing"></label>
-    ${TRADES.map(t=>`<label><span class="label">ADF ${t} h</span><input type="number" step="0.5" min="0" name="h${t}" value="0"></label>`).join('')}
-    <div><button class="primary" type="submit">Add to v${p.version}</button></div></form>`:''}</section>
+</section>
+  ${editable&&isCur?`<section class="card"><h3>Add work order to v${p.version}</h3>
+    <form class="form" id="addWoTask" style="margin-top:0">
+      <label style="grid-column:span 2"><span class="label">From the task database (type to search ${S.tasks.length} tasks)</span><input type="text" name="task" list="taskOpts" placeholder="e.g. MLG brake, OMP-32, DEMO-32A" autocomplete="off"><datalist id="taskOpts">${S.tasks.map(t=>`<option value="${esc(t.ref)} — ${esc(t.title)}"></option>`).join('')}</datalist></label>
+      <label><span class="label">Work order number</span><input type="text" name="woNo" placeholder="blank = auto" autocomplete="off"></label>
+      <div><button class="primary" type="submit">Add task</button></div></form>
+    <h3 style="margin-top:18px">Or add a manual work order</h3><p class="sub">Tools and spares entered here go straight to Tooling and Materials.</p>
+    <form class="form" id="addWoManual" style="margin-top:0">${manualFields()}<div><button class="primary" type="submit">Add manual work order</button></div></form></section>`:''}
   ${editable?extraForm(counted(p),p.id):''}
   ${feed(p.id)}`;
 }
@@ -268,10 +327,11 @@ function vCapacity(){
 }
 
 function vTasks(){
-  const f=taskFilter.toLowerCase(),list=S.tasks.filter(t=>!f||(t.ref+' '+t.title).toLowerCase().includes(f)).sort((a,b)=>a.ref.localeCompare(b.ref));
+  const all=S.tasks.filter(t=>taskMatches(t,{q:taskFilter,ata:'',selOnly:false})).sort((a,b)=>a.ref.localeCompare(b.ref)),list=all.slice(0,100);
   const escN=r=>S.escapes.filter(e=>e.ref===r&&!e.done).length;
   return `<section class="card"><div class="row spread"><div><h2>Task database</h2><p class="sub" style="margin:0">Industrialised OMP tasks. Edit hours and standard spares here and every new work pack uses them. ${S.tasks.filter(t=>t.ind).length} of ${S.tasks.length} industrialised.</p></div>
-  <input type="text" id="taskFilter" placeholder="Search task or ATA ref" value="${esc(taskFilter)}" aria-label="Search tasks"></div>
+  <input type="search" id="taskFilter" placeholder="Search ref, title, part number or tool" value="${esc(taskFilter)}" aria-label="Search tasks" style="min-width:260px"></div>
+  <p class="label" style="margin:8px 0 0">${all.length} task${all.length===1?'':'s'}${all.length>100?' · showing first 100, refine the search':''}</p>
   <div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Task ref</th><th>Title</th>${TRADES.map(t=>`<th class="num">${t} h</th>`).join('')}<th>Tooling / GSE</th><th>Standard spares <span style="text-transform:none">(one per line: part, qty)</span></th><th>Needs</th><th>Status</th></tr></thead><tbody>
   ${list.map(t=>`<tr><td class="mono">${esc(t.ref)}</td><td>${esc(t.title)}</td>${TRADES.map(tr=>`<td class="num"><input type="number" step="0.5" min="0" value="${t.hrs[tr]||0}" data-thrs="${esc(t.ref)}|${tr}" aria-label="${tr} hours"></td>`).join('')}
     <td style="font-size:13px">${(t.tooling||[]).map(esc).join('<br>')||'–'}</td>
@@ -506,15 +566,19 @@ function vTrends(){
 const woBy=no=>S.work_orders.find(w=>w.no===no);
 function setLine(no,kind,i,patch,logText){const w=woBy(no);const arr=(w[kind]||[]).map(x=>({...x}));Object.assign(arr[i],patch);return upd('work_orders',no,{[kind]:arr},logText,w.pack_id)}
 async function createPack(f){
-  const ac=f.get('ac').trim(),check=f.get('check').trim(),start=f.get('start'),days=Number(f.get('days'))||1;
-  if(!newSel.size){toast('Pick at least one OMP task');return}
+  const ac=(f.get('ac')||'').trim(),check=(f.get('check')||'').trim(),start=f.get('start'),days=Number(f.get('days'))||1;
+  if(!ac||!check||!start){toast('Fill in aircraft, check type and start date first');return}
+  if(!newSel.size&&!newManual.length){toast('Add at least one work order');return}
+  const nos=[...Object.values(newWoNos).filter(Boolean),...newManual.map(m=>m.no).filter(Boolean)];
+  const dup=nos.find((n,i)=>nos.indexOf(n)!==i||S.work_orders.some(w=>w.no===n));if(dup){toast(`${dup} is already in use`);return}
   const id=rid('WP-'+String(new Date().getFullYear()).slice(2)+'-',4);
-  const p=await ins('packs',[{id,ac,check_type:check,start_date:start,days,version:1,status:'Planning',checks:{received:true}}],`Created ${id} for ${ac} (${check})`,id);
+  const p=await ins('packs',[{id,ac,check_type:check,start_date:start,days,version:1,status:'Planning',checks:{received:true}}],`Created ${id} for ${ac} (${check}) with ${newSel.size+newManual.length} work orders`,id);
   if(!p)return;
-  const rows=[...newSel].map(ref=>{const t=taskByRef(ref);return {no:rid('WO-',6),pack_id:id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:1,
+  const rows=[...newSel].map(ref=>{const t=taskByRef(ref);return {no:newWoNos[ref]||rid('WO-',6),pack_id:id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:1,
     parts:stdParts(t),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}});
+  newManual.forEach(m=>rows.push({...m,no:m.no||rid('WO-',6),pack_id:id,added_v:1}));
   await ins('work_orders',rows);
-  newSel.clear();newDraft={};curPack=id;curVer=null;go('pack');toast('Work pack created — Materials and Tooling can see it now');
+  newSel.clear();newDraft={};newWoNos={};newManual=[];newFilter={q:'',ata:'',selOnly:false};curPack=id;curVer=null;go('pack');toast('Work pack created — Materials and Tooling can see it now');
 }
 async function closePack(p){
   const W=toWork(p),planned={Mech:0,B1:0,B2:0},actual={Mech:0,B1:0,B2:0};
@@ -539,7 +603,10 @@ function wire(){
     const t=e.target.closest('button,[data-open],[data-goto]');if(!t)return;const d=t.dataset;
     if(d.open){curPack=d.open;curVer=null;go(d.to)}
     else if(d.goto)go(d.goto);
-    else if(t.id==='selAll'){S.tasks.forEach(x=>newSel.add(x.ref));render()}
+    else if(t.id==='selShown'){S.tasks.filter(x=>taskMatches(x,newFilter)).forEach(x=>newSel.add(x.ref));render()}
+    else if(t.id==='createPack'){await createPack(new FormData($('newForm')))}
+    else if(d.unsel){newSel.delete(d.unsel);delete newWoNos[d.unsel];render()}
+    else if(d.unman!==undefined){newManual.splice(+d.unman,1);render()}
     else if(t.id==='selNone'){newSel.clear();render()}
     else if(t.id==='newVer'){const p=packById(curPack);curVer=null;await upd('packs',p.id,{version:p.version+1},`Started version ${p.version+1} of ${p.id}`,p.id)}
     else if(t.id==='release'){const p=packById(curPack);await upd('packs',p.id,{status:'In work'},`Released ${p.id} to production`,p.id);toast('Released — the shift lead can now book progress')}
@@ -564,7 +631,10 @@ function wire(){
     if(t.name==='wo'&&t.form&&t.form.id==='extraForm'){$('newWoFields').hidden=t.value!=='__new';if(t.value==='__new')t.form.querySelector('[name=woNew]').focus();return}
     if(t.id==='packSel'){curPack=t.value;curVer=null;render();return}
     if(t.id==='verSel'){curVer=+t.value;render();return}
-    if(d.newtask){t.checked?newSel.add(d.newtask):newSel.delete(d.newtask);render();return}
+    if(d.newtask){t.checked?newSel.add(d.newtask):(newSel.delete(d.newtask),delete newWoNos[d.newtask]);render();return}
+    if(d.newwo){const v=t.value.trim().toUpperCase().replace(/\s+/g,'');t.value=v;if(v)newWoNos[d.newwo]=v;else delete newWoNos[d.newwo];return}
+    if(t.id==='newAta'){newFilter.ata=t.value;applyNewFilter();return}
+    if(t.id==='newSelOnly'){newFilter.selOnly=t.checked;applyNewFilter();return}
     if(d.chk){const [id,k]=d.chk.split('|'),p=packById(id),c={...(p.checks||{}),[k]:t.checked};const lbl=CHECKS.find(x=>x[0]===k)[1];
       await upd('packs',id,{checks:c},`${t.checked?'Ticked':'Unticked'} "${lbl}" on ${id}`,id);return}
     if(d.dec){const w=woBy(d.dec);await upd('work_orders',w.no,{decision:t.value},`${w.no} (${w.title}) set to ${t.value}`,w.pack_id);return}
@@ -589,11 +659,19 @@ function wire(){
     if(d.roster){const r=roster();let patch;if(d.roster==='prod')patch={prod:Number(t.value)||0};else{const [k,tr]=d.roster.split('|');patch={[k]:{...r[k],[tr]:Number(t.value)||0}}}
       if(S.roster.length)await upd('roster',1,patch,'Roster updated');else await ins('roster',[{id:1,...r,...patch}],'Roster updated');return}
   });
-  V.addEventListener('input',e=>{if(e.target.form&&e.target.form.id==='newForm'&&e.target.name)newDraft[e.target.name]=e.target.value;if(e.target.id==='taskFilter'){taskFilter=e.target.value;const pos=e.target.selectionStart;render();const f=$('taskFilter');f.focus();f.setSelectionRange(pos,pos)}});
+  V.addEventListener('input',e=>{if(e.target.id==='newSearch'){newFilter.q=e.target.value;applyNewFilter();return}if(e.target.form&&e.target.form.id==='newForm'&&e.target.name)newDraft[e.target.name]=e.target.value;if(e.target.id==='taskFilter'){taskFilter=e.target.value;const pos=e.target.selectionStart;render();const f=$('taskFilter');f.focus();f.setSelectionRange(pos,pos)}});
   V.addEventListener('submit',async e=>{
     e.preventDefault();const f=new FormData(e.target),btn=e.target.querySelector('[type=submit]');btn.disabled=true;
     try{
       if(e.target.id==='newForm')await createPack(f);
+      else if(e.target.id==='manualNew'){const r=manualFromForm(f);if(r.err){toast(r.err);return}newManual.push(r.row);e.target.reset();render();toast('Added — it will be created with the pack')}
+      else if(e.target.id==='addWoTask'){const p=packById(curPack),raw=(f.get('task')||'').trim(),ref=raw.split(' — ')[0].trim().toUpperCase(),t=taskByRef(ref);
+        if(!t){toast('Pick a task from the list');return}
+        const no=(f.get('woNo')||'').trim().toUpperCase().replace(/\s+/g,'')||rid('WO-',6);if(S.work_orders.some(w=>w.no===no)){toast(`${no} is already in use`);return}
+        await ins('work_orders',[{no,pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:stdParts(t),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}],`Added ${no} (${t.title}) to v${p.version}`,p.id);e.target.reset()}
+      else if(e.target.id==='addWoManual'){const p=packById(curPack),r=manualFromForm(f);if(r.err){toast(r.err);return}
+        const row={...r.row,no:r.row.no||rid('WO-',6),pack_id:p.id,added_v:p.version};
+        await ins('work_orders',[row],`Added ${row.no} (${row.title}) to v${p.version}${row.parts.length?' with '+row.parts.length+' spares line'+(row.parts.length>1?'s':''):''}${row.tools.length?', '+row.tools.length+' tool'+(row.tools.length>1?'s':''):''}`,p.id);e.target.reset()}
       else if(e.target.id==='addWo'){const p=packById(curPack),ref=f.get('ref');let row;
         if(ref){const t=taskByRef(ref);row={no:rid('WO-',6),pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:stdParts(t),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}}
         else{const title=(f.get('title')||'').trim();if(!title){toast('Describe the ADF first');return}
