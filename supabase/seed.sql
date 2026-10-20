@@ -638,3 +638,7 @@ insert into tasks (ref,title,hrs,tooling,materials,flags,ind) values
 ('OMP-80-801-05','Start valves — operational check','{"Mech":1,"B1":1,"B2":0.5}'::jsonb,'[]'::jsonb,'[]'::jsonb,'{}'::jsonb,true),
 ('OMP-80-1101-06','Start valves — removal and installation','{"Mech":4,"B1":3,"B2":1}'::jsonb,'["Torque wrench 200-800 Nm"]'::jsonb,'[{"pn":"DEMO-80B-6690","qty":1}]'::jsonb,'{"dup":1}'::jsonb,true)
 on conflict (ref) do nothing;
+
+-- demo urgencies and a tracking number
+update work_orders set parts = jsonb_set(jsonb_set(parts,'{1,urg}','"Critical"'),'{1,tracking}','"DEMO-TRK-558201"') where no='WO-480124';
+update work_orders set parts = jsonb_set(jsonb_set(parts,'{0,urg}','"AOG"'),'{0,desc}','"Steering actuator seal kit"') where no='WO-480134';
