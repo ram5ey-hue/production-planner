@@ -68,6 +68,13 @@ insert into work_orders (no,pack_id,ref,type,title,hrs,flags,added_v,removed_v,d
 
 update work_orders set started_at = now() - interval '5 hours', completed_at = now() - interval '3 hours', worked_min = 120 where progress = 'Complete';
 update work_orders set started_at = now() - interval '50 minutes', run_from = now() - interval '50 minutes' where progress = 'In progress';
+-- standard spares start as 'Requested' at their standard quantity
+update work_orders set parts = (
+  select coalesce(jsonb_agg(case when e->>'stock' = 'Not checked'
+    then e || jsonb_build_object('stock','Requested','qty', coalesce((e->>'exp')::numeric, (e->>'qty')::numeric), 'src','standard')
+    else e || jsonb_build_object('src', case when e->>'exp' is null then 'extra' else 'standard' end) end), '[]'::jsonb)
+  from jsonb_array_elements(parts) e)
+where jsonb_array_length(parts) > 0;
 
 insert into history (id,ac,check_type,end_date,planned,actual,wos,done,adf,esc,late) values
 ('WP-26-0301','A02','Base check (6M)',current_date + -187,'{"Mech":118,"B1":52,"B2":21}'::jsonb,'{"Mech":142.8,"B1":58.2,"B2":22.1}'::jsonb,64,55,9,7,2),
