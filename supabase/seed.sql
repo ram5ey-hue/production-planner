@@ -19,7 +19,7 @@ insert into tasks (ref,title,hrs,tooling,materials,flags,ind) values
 ('OMP-23-110-01','VHF radio functional test','{"Mech":0,"B1":0,"B2":1.5}'::jsonb,'["Radio test set"]'::jsonb,'[]'::jsonb,'{}'::jsonb,true),
 ('OMP-31-310-01','Flight data recorder download','{"Mech":0,"B1":0,"B2":1}'::jsonb,'["FDR download unit"]'::jsonb,'[]'::jsonb,'{}'::jsonb,false);
 
-insert into roster (id,weekday,weekend,prod) values (1,'{"Mech":10,"B1":5,"B2":3}'::jsonb,'{"Mech":6,"B1":3,"B2":2}'::jsonb,6.5);
+insert into roster (id,weekday,weekend,prod) values (1,'{"Mech":2,"B1":1,"B2":1}'::jsonb,'{"Mech":1,"B1":1,"B2":1}'::jsonb,6.5);
 
 insert into packs (id,ac,check_type,start_date,days,version,status,checks) values
 ('WP-26-0409','A03','Weekly check',current_date + -1,2,2,'In work','{"received":true,"pace":true,"demand":true,"stores":true,"tooling":true,"hangar":true,"g703":true}'::jsonb),
