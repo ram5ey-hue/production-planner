@@ -66,6 +66,9 @@ insert into work_orders (no,pack_id,ref,type,title,hrs,flags,added_v,removed_v,d
 ('WO-480147','WP-26-0425','OMP-51-110-01','OMP','Corrosion treatment and paint touch-up','{"Mech":5,"B1":1,"B2":0}'::jsonb,'{"paint":1,"hangar":1}'::jsonb,1,null,'Pending','','[{"pn":"DEMO-PNT-5110","exp":2,"qty":0,"stock":"Not checked","eta":null}]'::jsonb,'[{"name":"Paint kit","status":"Not checked","note":""},{"name":"Extraction unit","status":"Not checked","note":""}]'::jsonb,'Not started','','{}'::jsonb),
 ('WO-480148','WP-26-0425','OMP-31-310-01','OMP','Flight data recorder download','{"Mech":0,"B1":0,"B2":1}'::jsonb,'{}'::jsonb,1,null,'Pending','','[]'::jsonb,'[{"name":"FDR download unit","status":"Not checked","note":""}]'::jsonb,'Not started','','{}'::jsonb);
 
+update work_orders set started_at = now() - interval '5 hours', completed_at = now() - interval '3 hours' where progress = 'Complete';
+update work_orders set started_at = now() - interval '50 minutes' where progress = 'In progress';
+
 insert into history (id,ac,check_type,end_date,planned,actual,wos,done,adf,esc,late) values
 ('WP-26-0301','A02','Base check (6M)',current_date + -187,'{"Mech":118,"B1":52,"B2":21}'::jsonb,'{"Mech":142.8,"B1":58.2,"B2":22.1}'::jsonb,64,55,9,7,2),
 ('WP-26-0308','A04','Weekly check',current_date + -174,'{"Mech":22,"B1":9,"B2":6}'::jsonb,'{"Mech":25.3,"B1":9.7,"B2":6}'::jsonb,18,16,2,2,0),

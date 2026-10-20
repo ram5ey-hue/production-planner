@@ -44,8 +44,13 @@ create table if not exists work_orders (
   progress   text not null default 'Not started' check (progress in ('Not started','In progress','Complete','Passed back')),
   assignee   text not null default '',
   actual     jsonb not null default '{}',
+  started_at timestamptz,
+  completed_at timestamptz,
   updated_at timestamptz not null default now()
 );
+-- for databases created before these columns existed
+alter table work_orders add column if not exists started_at timestamptz;
+alter table work_orders add column if not exists completed_at timestamptz;
 create index if not exists work_orders_pack on work_orders(pack_id);
 
 create table if not exists escapes (
