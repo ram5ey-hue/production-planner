@@ -1,7 +1,8 @@
 /* Production Planner — shared multi-stakeholder demo (Supabase backend). All demo data is invented. */
 'use strict';
 const TRADES=['Mech','B1','B2'];
-const MAT_ST=['Not checked','In stock','Kitted','On order','Not available'];
+const MAT_ST=['Requested','In stock','On order','Kitted','Issued','Not available'];
+const stdParts=t=>(t.materials||[]).map(m=>({pn:m.pn,exp:m.qty,qty:m.qty,stock:'Requested',eta:null,src:'standard'}));
 const TOOL_ST=['Not checked','Available','Booked','In calibration','U/S'];
 const PROG=['Not started','In progress','Complete','Passed back'];
 const DECISIONS=['Pending','Accepted','Rejected','G703'];
@@ -86,7 +87,18 @@ const toWork=p=>live(p).filter(w=>w.decision==='Accepted'||w.decision==='G703');
 function packHrs(p){const h={Mech:0,B1:0,B2:0};counted(p).forEach(w=>TRADES.forEach(t=>h[t]+=Number(w.hrs?.[t])||0));return h}
 function spareSt(w){const L=w.parts||[];if(!L.length)return 'none';
   if(L.some(l=>l.stock==='Not available'||(l.exp!=null&&Number(l.qty)<Number(l.exp))))return 'bad';
-  if(L.some(l=>l.stock==='On order'||l.stock==='Not checked'))return 'warn';return 'ok'}
+  if(L.some(l=>!['In stock','Kitted','Issued'].includes(l.stock)))return 'warn';return 'ok'}
+const openRequests=()=>S.work_orders.filter(w=>{const p=packById(w.pack_id);return p&&p.status!=='Closed'&&w.decision!=='Rejected'&&!(w.removed_v&&w.removed_v<=p.version)}).flatMap(w=>(w.parts||[]).map((l,i)=>({w,l,i}))).filter(x=>x.l.src==='extra'&&x.l.stock==='Requested');
+let xspPrefill=null;
+function extraForm(W){
+  if(!W.length)return '';
+  return `<section class="card" id="extraCard"><h3>Request extra spares</h3><p class="sub">For anything beyond the job's standard spares. It goes straight onto the Materials list, marked as an extra.</p>
+  <form class="form" id="extraForm" style="margin-top:0"><label><span class="label">Job</span><select name="wo">${W.map(w=>`<option value="${esc(w.no)}"${xspPrefill===w.no?' selected':''}>${esc(w.title)} · ${esc(w.no)}</option>`).join('')}</select></label>
+    <label><span class="label">Part number</span><input type="text" name="pn" required placeholder="e.g. DEMO-SEAL-0000"></label>
+    <label><span class="label">Qty</span><input type="number" name="qty" value="1" min="1" required></label>
+    <label class="wide"><span class="label">Reason</span><input type="text" name="reason" required placeholder="e.g. seal damaged on removal"></label>
+    <div><button class="primary" type="submit">Request spares</button></div></form></section>`;
+}
 function toolSt(w){const L=w.tools||[];if(!L.length)return 'none';
   if(L.some(l=>l.status==='U/S'||l.status==='In calibration'))return 'bad';
   if(L.some(l=>l.status==='Not checked'))return 'warn';return 'ok'}
@@ -113,7 +125,7 @@ const pctClass=p=>p===0?'c0':p<85?'c1':p<=100?'c2':'c3';
 function setLive(s){const el=$('live');el.className='live '+s;el.querySelector('span').textContent=s==='on'?'Live':s==='off'?'Offline — reconnecting':'Connecting'}
 function tabsHtml(){
   const openEsc=S.escapes.filter(e=>!e.done).length,openHo=S.handover.filter(h=>!h.done).length;
-  return ROLES[role].tabs.map(([k,l])=>`<button role="tab" data-view="${k}" aria-selected="${k===view}">${esc(l)}${k==='escapes'&&openEsc?`<span class="n">${openEsc}</span>`:''}${k==='handover'&&openHo?`<span class="n">${openHo}</span>`:''}</button>`).join('');
+  return ROLES[role].tabs.map(([k,l])=>`<button role="tab" data-view="${k}" aria-selected="${k===view}">${esc(l)}${k==='escapes'&&openEsc?`<span class="n">${openEsc}</span>`:''}${k==='handover'&&openHo?`<span class="n">${openHo}</span>`:''}${k==='mat'&&openRequests().length?`<span class="n">${openRequests().length}</span>`:''}</button>`).join('');
 }
 let pending=false,ptr=false;
 document.addEventListener('pointerdown',()=>{ptr=true},true);
@@ -135,7 +147,7 @@ function setRole(r){role=r;ls.set('pp.role',r);try{history.replaceState(null,'',
 const hrsBlock=h=>`<div class="hrs">${TRADES.map(t=>`<div><span class="label">${t}</span><b>${fmt(h[t])} h</b></div>`).join('')}</div>`;
 function meter(p,goodHigh=true){const c=p>=85?'var(--ok)':p>=50?'var(--warn)':'var(--bad)';return `<div class="meter"><div class="bar"><i style="width:${p}%;background:${goodHigh?c:'var(--accent)'}"></i></div><b>${p}%</b></div>`}
 const stTag=(s,lbl)=>s==='none'?'<span class="tag">None</span>':`<span class="tag ${s}">${lbl||({ok:'Ready',warn:'Pending',bad:'Issue'}[s])}</span>`;
-const lvl=s=>['In stock','Kitted','Available','Booked'].includes(s)?'ok':['Not available','U/S','In calibration'].includes(s)?'bad':'warn';
+const lvl=s=>['In stock','Kitted','Issued','Available','Booked'].includes(s)?'ok':['Not available','U/S','In calibration'].includes(s)?'bad':'warn';
 const packSelect=(list,cur,id='packSel')=>`<label class="label">Work pack <select id="${id}">${list.map(x=>`<option value="${x.id}"${x.id===cur?' selected':''}>${esc(x.ac)} · ${esc(x.check_type)} · ${esc(x.id)}</option>`).join('')}</select></label>`;
 function feed(packId){
   const A=S.activity.filter(a=>!packId||a.pack_id===packId).slice(0,25);
@@ -208,7 +220,7 @@ function vPack(){
       <td><div class="tags">${FLAGS.filter(([k])=>w.flags?.[k]).map(([,l])=>`<span class="tag">${l}</span>`).join('')}</div></td>
       <td class="keep">${ed?`<select class="s-${w.decision}" data-dec="${esc(w.no)}" aria-label="Decision">${DECISIONS.map(s=>`<option${s===w.decision?' selected':''}>${s}</option>`).join('')}</select>`:`<span class="tag">${esc(w.decision)}</span>`}</td>
       <td class="keep">${ed?`<input type="text" value="${esc(w.comment)}" data-woc="${esc(w.no)}" placeholder="Note for shift lead" aria-label="Note for shift lead" style="width:100%;min-width:170px">`:esc(w.comment)}</td>
-      <td class="keep">${p.status==='In work'||p.status==='Closed'?`<span class="tag ${isPaused(w)?'bad':w.progress==='Complete'?'ok':w.progress==='Passed back'?'bad':w.progress==='In progress'?'warn':''}">${isPaused(w)?'Paused — '+esc(w.pause_reason||''):esc(w.progress)}</span>`:''}${ed&&!rem?` <button class="link" data-rmwo="${esc(w.no)}" title="Remove in this version">Remove</button>`:''}</td></tr>`}).join('');
+      <td class="keep">${p.status==='In work'||p.status==='Closed'?`<span class="tag ${isPaused(w)?'bad':w.progress==='Complete'?'ok':w.progress==='Passed back'?'bad':w.progress==='In progress'?'warn':''}">${isPaused(w)?'Paused — '+esc(w.pause_reason||''):esc(w.progress)}</span>`:''}${ed&&!rem&&w.decision!=='Rejected'?` <button class="link" data-xsp="${esc(w.no)}">+ Spares</button>`:''}${ed&&!rem?` <button class="link" data-rmwo="${esc(w.no)}" title="Remove in this version">Remove</button>`:''}</td></tr>`}).join('');
   const taskOpts=S.tasks.map(t=>`<option value="${esc(t.ref)}">${esc(t.ref)} — ${esc(t.title)}</option>`).join('');
   return `<section class="card"><div class="row spread"><div><h2>${esc(p.ac)} · ${esc(p.check_type)} <span class="status ${p.status.replace(' ','-')}">${esc(p.status)}</span></h2><p class="sub" style="margin:0">${esc(p.id)} · input ${dShort(p.start_date)} for ${p.days} days</p></div>
     <div class="row">${packSelect(P,p.id)}
@@ -229,6 +241,7 @@ function vPack(){
     <label><span class="label">ADF description</span><input type="text" name="title" placeholder="e.g. ADF: Panel fastener missing"></label>
     ${TRADES.map(t=>`<label><span class="label">ADF ${t} h</span><input type="number" step="0.5" min="0" name="h${t}" value="0"></label>`).join('')}
     <div><button class="primary" type="submit">Add to v${p.version}</button></div></form>`:''}</section>
+  ${editable?extraForm(counted(p)):''}
   ${feed(p.id)}`;
 }
 
@@ -253,12 +266,12 @@ function vCapacity(){
 function vTasks(){
   const f=taskFilter.toLowerCase(),list=S.tasks.filter(t=>!f||(t.ref+' '+t.title).toLowerCase().includes(f)).sort((a,b)=>a.ref.localeCompare(b.ref));
   const escN=r=>S.escapes.filter(e=>e.ref===r&&!e.done).length;
-  return `<section class="card"><div class="row spread"><div><h2>Task database</h2><p class="sub" style="margin:0">Industrialised OMP tasks. Edit hours here and every new work pack uses them. ${S.tasks.filter(t=>t.ind).length} of ${S.tasks.length} industrialised.</p></div>
+  return `<section class="card"><div class="row spread"><div><h2>Task database</h2><p class="sub" style="margin:0">Industrialised OMP tasks. Edit hours and standard spares here and every new work pack uses them. ${S.tasks.filter(t=>t.ind).length} of ${S.tasks.length} industrialised.</p></div>
   <input type="text" id="taskFilter" placeholder="Search task or ATA ref" value="${esc(taskFilter)}" aria-label="Search tasks"></div>
-  <div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Task ref</th><th>Title</th>${TRADES.map(t=>`<th class="num">${t} h</th>`).join('')}<th>Tooling / GSE</th><th>Materials</th><th>Needs</th><th>Status</th></tr></thead><tbody>
+  <div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Task ref</th><th>Title</th>${TRADES.map(t=>`<th class="num">${t} h</th>`).join('')}<th>Tooling / GSE</th><th>Standard spares <span style="text-transform:none">(one per line: part, qty)</span></th><th>Needs</th><th>Status</th></tr></thead><tbody>
   ${list.map(t=>`<tr><td class="mono">${esc(t.ref)}</td><td>${esc(t.title)}</td>${TRADES.map(tr=>`<td class="num"><input type="number" step="0.5" min="0" value="${t.hrs[tr]||0}" data-thrs="${esc(t.ref)}|${tr}" aria-label="${tr} hours"></td>`).join('')}
     <td style="font-size:13px">${(t.tooling||[]).map(esc).join('<br>')||'–'}</td>
-    <td class="mono" style="font-size:12px">${(t.materials||[]).map(m=>esc(m.pn)+' ×'+m.qty).join('<br>')||'–'}</td>
+    <td><textarea rows="${Math.max(2,(t.materials||[]).length+1)}" data-tmat="${esc(t.ref)}" placeholder="PART-NUMBER, qty" aria-label="Standard spares" style="min-width:180px">${esc((t.materials||[]).map(m=>m.pn+', '+m.qty).join('\n'))}</textarea></td>
     <td><div class="tags">${FLAGS.filter(([k])=>t.flags?.[k]).map(([,l])=>`<span class="tag">${l}</span>`).join('')}</div></td>
     <td><label class="row" style="font-size:13px;gap:4px"><input type="checkbox" data-tind="${esc(t.ref)}" ${t.ind?'checked':''}>Industrialised</label>${escN(t.ref)?`<span class="tag bad">${escN(t.ref)} open escape</span>`:''}</td></tr>`).join('')}
   </tbody></table></div></section>`;
@@ -325,7 +338,48 @@ function deptQueue(kind){
     <label><span class="label">Part number</span><input type="text" name="pn" required placeholder="DEMO-XXX-0000"></label><label><span class="label">Qty</span><input type="number" name="qty" value="1" min="1"></label><div><button class="primary" type="submit">Add line</button></div></form>`:''}</section>
   ${feed(p.id)}`;
 }
-const vMat=()=>deptQueue('parts');
+function vMat(){
+  const P=openPacks();if(!P.length)return '<div class="empty">No open work packs.</div>';
+  const p=packById(curPack)&&packById(curPack).status!=='Closed'?packById(curPack):P[0];curPack=p.id;
+  const R=openRequests().sort((a,b)=>String(b.l.at||'').localeCompare(String(a.l.at||'')));
+  const W=counted(p).filter(w=>(w.parts||[]).length);
+  const lines=W.flatMap(w=>w.parts.map((l,i)=>({w,l,i})));
+  // collection list grouped by part number
+  const G={};lines.forEach(x=>{const k=x.l.pn;(G[k]=G[k]||{pn:k,qty:0,jobs:[],st:new Set(),extra:false}).qty+=Number(x.l.qty)||0;G[k].jobs.push(x);G[k].st.add(x.l.stock);if(x.l.src==='extra')G[k].extra=true});
+  const groups=Object.values(G).sort((a,b)=>(lvl([...a.st][0])==='ok')-(lvl([...b.st][0])==='ok')||a.pn.localeCompare(b.pn));
+  const c={ok:0,warn:0,bad:0};lines.forEach(x=>c[lvl(x.l.stock)]++);
+  const myChecks=CHECKS.filter(k=>k[2]==='materials');
+  const stSel=(attr,cur,mixed)=>`<select class="st-${mixed?'thin':lvl(cur)==='bad'?'miss':lvl(cur)==='warn'?'thin':'ok'}" ${attr} aria-label="Stock status">${mixed?'<option selected disabled>Mixed</option>':''}${MAT_ST.map(x=>`<option${!mixed&&x===cur?' selected':''}>${x}</option>`).join('')}</select>`;
+  const srcTag=l=>l.src==='extra'?`<span class="tag acc" title="${esc(l.reason||'')}">Extra</span>`:'<span class="tag">Standard</span>';
+  return `<section class="card"><div class="row spread"><div><h2>Parts queue</h2><p class="sub" style="margin:0">Standard spares come from the task database when a job is added. Extras are requested by the planner or shift lead against a job.</p></div>${packSelect(P,p.id)}</div></section>
+  <section class="card" style="${R.length?'border-color:var(--accent)':''}"><h3>Extra spares requests ${R.length?`<span class="status Planning">${R.length} new</span>`:''}</h3>
+  ${R.length?`<div class="tablewrap"><table><thead><tr><th>Requested</th><th>Part number</th><th class="num">Qty</th><th>Job</th><th>Reason</th><th>Status</th></tr></thead><tbody>
+    ${R.map(({w,l,i})=>{const pk=packById(w.pack_id);return `<tr><td class="mono" style="font-size:12px">${l.at?ago(l.at):''}<div style="color:var(--muted)">${esc(ROLES[l.by]?.name||l.by||'')}${l.actor?' · '+esc(l.actor):''}</div></td><td class="mono">${esc(l.pn)}</td><td class="num">${l.qty}</td>
+      <td>${esc(w.title)}<div class="mono" style="font-size:11px;color:var(--muted)">${esc(pk.ac)} · ${esc(w.no)}</div></td><td>${esc(l.reason||'')}</td><td>${stSel(`data-ps="${esc(w.no)}|${i}"`,l.stock)}</td></tr>`}).join('')}
+  </tbody></table></div>`:'<div class="empty">No outstanding extra requests.</div>'}</section>
+  <div class="strip">
+    <div class="tile"><span class="label">Part lines · ${esc(p.ac)}</span><span class="big">${lines.length}</span><span class="meta">${groups.length} part numbers · ${dShort(p.start_date)}</span></div>
+    <div class="tile"><span class="label">Ready</span><span class="big" style="color:var(--ok)">${c.ok}</span><span class="meta">in stock, kitted or issued</span></div>
+    <div class="tile ${c.warn?'warn':''}"><span class="label">To action</span><span class="big" style="color:var(--warn)">${c.warn}</span><span class="meta">requested or on order</span></div>
+    <div class="tile ${c.bad?'bad':''}"><span class="label">Not available</span><span class="big" style="color:var(--bad)">${c.bad}</span></div>
+    <div class="tile"><span class="label">Sign-off</span>${myChecks.map(([k,l])=>`<label class="row" style="font-size:14px"><input type="checkbox" data-chk="${p.id}|${k}" ${(p.checks||{})[k]?'checked':''}> ${esc(l)}</label>`).join('')}</div>
+  </div>
+  <section class="card"><h3>Collection list — ${esc(p.ac)} · ${esc(p.check_type)}</h3><p class="sub">Every part needed for this work pack, totalled by part number. Setting a status here updates every job that uses that part.</p>
+  ${groups.length?`<div class="tablewrap"><table><thead><tr><th>Part number</th><th class="num">Total qty</th><th>For</th><th>Status</th></tr></thead><tbody>
+    ${groups.map(g=>{const mixed=g.st.size>1,cur=[...g.st][0];return `<tr><td class="mono">${esc(g.pn)} ${g.extra?'<span class="tag acc">incl. extra</span>':''}</td><td class="num"><b>${g.qty}</b></td>
+      <td style="font-size:13px">${g.jobs.map(x=>`${esc(x.w.title)} <span class="mono" style="color:var(--muted)">×${x.l.qty}</span>`).join('<br>')}</td>
+      <td>${stSel(`data-pnst="${esc(p.id)}|${esc(g.pn)}"`,cur,mixed)}</td></tr>`}).join('')}
+  </tbody></table></div>`:'<div class="empty">No spares on this work pack.</div>'}</section>
+  <section class="card"><h3>By job</h3>
+  ${W.length?`<div class="tablewrap"><table><thead><tr><th>Part number</th><th>Source</th><th class="num">Standard</th><th class="num">Qty</th><th>Status</th><th>ETA</th></tr></thead><tbody>
+    ${W.map(w=>`<tr style="background:var(--bg)"><td colspan="6"><b class="mono">${esc(w.no)}</b> · ${esc(w.title)} ${stTag(spareSt(w))}</td></tr>`+w.parts.map((l,i)=>`<tr><td class="mono">${esc(l.pn)}</td><td>${srcTag(l)}${l.src==='extra'&&l.reason?`<div style="font-size:12px;color:var(--muted)">${esc(l.reason)}</div>`:''}</td><td class="num">${l.exp??'–'}</td>
+      <td class="num"><input type="number" min="0" value="${l.qty}" data-pq="${esc(w.no)}|${i}" aria-label="Quantity">${l.exp!=null&&Number(l.qty)<Number(l.exp)?` <span class="tag bad">Short ${l.exp-l.qty}</span>`:''}</td>
+      <td>${stSel(`data-ps="${esc(w.no)}|${i}"`,l.stock)}</td><td><input type="date" value="${l.eta||''}" data-pe="${esc(w.no)}|${i}" aria-label="ETA"></td></tr>`).join('')).join('')}
+  </tbody></table></div>`:'<div class="empty">No spares on this work pack.</div>'}
+  <form class="form" id="addPart"><label><span class="label">Add part to job</span><select name="wo">${counted(p).map(w=>`<option value="${esc(w.no)}">${esc(w.title)} · ${esc(w.no)}</option>`).join('')}</select></label>
+    <label><span class="label">Part number</span><input type="text" name="pn" required placeholder="DEMO-XXX-0000"></label><label><span class="label">Qty</span><input type="number" name="qty" value="1" min="1"></label><div><button class="primary" type="submit">Add line</button></div></form></section>
+  ${feed(p.id)}`;
+}
 const vTool=()=>deptQueue('tools');
 
 function hm(t){return t?new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):''}
@@ -379,8 +433,9 @@ function vFloor(){
     <td><input type="text" value="${esc(w.assignee)}" data-asg="${esc(w.no)}" placeholder="e.g. M-02, B1-01" size="12" ${ed?'':'disabled'} aria-label="Allocated to"></td>
     <td><span class="tag ${isPaused(w)?'bad':w.progress==='Complete'?'ok':w.progress==='In progress'?'warn':w.progress==='Passed back'?'bad':''}">${isPaused(w)?'Paused':esc(w.progress)}</span><div class="mono" style="font-size:11px;color:var(--muted);margin-top:3px">${when(w)}</div><div class="row" style="margin-top:6px;gap:6px">${btn(w)}</div></td>
     ${TRADES.map(t=>`<td class="num">${w.hrs?.[t]?`<input type="number" step="0.25" min="0" value="${w.actual?.[t]??''}" placeholder="${fmt(w.hrs[t])}" data-act="${esc(w.no)}|${t}" ${ed&&w.progress!=='Not started'?'':'disabled'} aria-label="${t} actual hours">`:'–'}</td>`).join('')}
-    <td style="white-space:nowrap"><button class="link" data-escfor="${esc(w.no)}">Escape</button></td></tr>`).join('')||`<tr><td colspan="${6+TRADES.length}"><div class="empty">No accepted work orders yet.</div></td></tr>`}
+    <td style="white-space:nowrap">${ed&&w.progress!=='Complete'?`<button class="link" data-xsp="${esc(w.no)}">+ Spares</button><br>`:''}<button class="link" data-escfor="${esc(w.no)}">Escape</button></td></tr>`).join('')||`<tr><td colspan="${6+TRADES.length}"><div class="empty">No accepted work orders yet.</div></td></tr>`}
   </tbody></table></div></section>
+  ${ed?extraForm(W.filter(w=>w.progress!=='Complete')):''}
   <div class="strip">${TRADES.map(t=>{const v=pl[t]?Math.round((act[t]-pl[t])/pl[t]*100):0;return `<div class="tile"><span class="label">${t} hours on completed jobs</span><span class="big">${fmt(act[t])} h</span><span class="meta">planned ${fmt(pl[t])} h ${pl[t]?`· <span class="tag ${Math.abs(v)<=5?'ok':v>0?'bad':'acc'}">${v>0?'+':''}${v}%</span>`:''}</span></div>`}).join('')}</div>
   ${feed(p.id)}`;
 }
@@ -453,7 +508,7 @@ async function createPack(f){
   const p=await ins('packs',[{id,ac,check_type:check,start_date:start,days,version:1,status:'Planning',checks:{received:true}}],`Created ${id} for ${ac} (${check})`,id);
   if(!p)return;
   const rows=[...newSel].map(ref=>{const t=taskByRef(ref);return {no:rid('WO-',6),pack_id:id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:1,
-    parts:(t.materials||[]).map(m=>({pn:m.pn,exp:m.qty,qty:0,stock:'Not checked',eta:null})),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}});
+    parts:stdParts(t),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}});
   await ins('work_orders',rows);
   newSel.clear();newDraft={};curPack=id;curVer=null;go('pack');toast('Work pack created — Materials and Tooling can see it now');
 }
@@ -497,6 +552,7 @@ function wire(){
       await upd('work_orders',w.no,{progress:done?'Complete':'Passed back',completed_at:done?now:null,worked_min:mins,run_from:null,paused_at:null,pause_reason:null,pause_log:log},done?`Completed: ${w.title} in ${fmtMin(mins)} working`:`Passed back to the line: ${w.title}`,w.pack_id);
       if(done)toast('Complete — add actual hours if different from plan')}
     else if(d.reopen){const w=woBy(d.reopen);await upd('work_orders',w.no,{progress:'In progress',completed_at:null,run_from:new Date().toISOString(),paused_at:null},`Reopened: ${w.title}`,w.pack_id)}
+    else if(d.xsp){xspPrefill=d.xsp;render();const c=$('extraCard');if(c){c.scrollIntoView({behavior:'smooth',block:'center'});setTimeout(()=>{const i=c.querySelector('[name=pn]');i&&i.focus()},300)}}
     else if(d.escfor){const w=woBy(d.escfor);escPrefill={pack:w.pack_id,ref:w.ref,detail:w.no+': '};go('escapes')}
   });
   V.addEventListener('change',async e=>{
@@ -509,6 +565,9 @@ function wire(){
     if(d.dec){const w=woBy(d.dec);await upd('work_orders',w.no,{decision:t.value},`${w.no} (${w.title}) set to ${t.value}`,w.pack_id);return}
     if(d.woc){const w=woBy(d.woc);await upd('work_orders',w.no,{comment:t.value},`Note added to ${w.no}`,w.pack_id);return}
     if(d.ps){const [no,i]=d.ps.split('|');const l=woBy(no).parts[i];await setLine(no,'parts',+i,{stock:t.value},`${l.pn} set to ${t.value}`);return}
+    if(d.pnst){const [pid,pn]=d.pnst.split('|');const ws=counted(packById(pid)).filter(w=>(w.parts||[]).some(l=>l.pn===pn));
+      for(const w of ws){const arr=w.parts.map(l=>l.pn===pn?{...l,stock:t.value}:l);await upd('work_orders',w.no,{parts:arr})}
+      log(`${pn} set to ${t.value} for ${ws.length} job${ws.length===1?'':'s'}`,pid);return}
     if(d.pq){const [no,i]=d.pq.split('|');const l=woBy(no).parts[i];await setLine(no,'parts',+i,{qty:Number(t.value)||0},`${l.pn} ordered qty ${Number(t.value)||0}`);return}
     if(d.pe){const [no,i]=d.pe.split('|');const l=woBy(no).parts[i];await setLine(no,'parts',+i,{eta:t.value||null},t.value?`${l.pn} ETA ${dShort(t.value)}`:null);return}
     if(d.ts){const [no,i]=d.ts.split('|');const l=woBy(no).tools[i];await setLine(no,'tools',+i,{status:t.value},`${l.name} set to ${t.value}`);return}
@@ -519,6 +578,8 @@ function wire(){
     if(d.esc){await upd('escapes',+d.esc,{done:t.checked},t.checked?'Escape closed — task database updated':'Escape reopened');return}
     if(d.ho){await upd('handover',+d.ho,{done:t.checked},t.checked?'Handover item closed':'Handover item reopened');return}
     if(d.thrs){const [ref,tr]=d.thrs.split('|');const x=taskByRef(ref);await upd('tasks',ref,{hrs:{...x.hrs,[tr]:Number(t.value)||0}},`${ref} ${tr} hours set to ${Number(t.value)||0}`);return}
+    if(d.tmat){const mats=t.value.split('\n').map(x=>x.trim()).filter(Boolean).map(x=>{const [pn,q]=x.split(/[,×x*]\s*(?=\d+\s*$)/);return {pn:(pn||x).replace(/,\s*$/,'').trim().toUpperCase(),qty:Number(q)||1}});
+      await upd('tasks',d.tmat,{materials:mats},`${d.tmat} standard spares updated (${mats.length} line${mats.length===1?'':'s'})`);toast('Saved — new work packs will use these spares');return}
     if(d.tind){await upd('tasks',d.tind,{ind:t.checked},`${d.tind} marked ${t.checked?'industrialised':'needs review'}`);return}
     if(d.roster){const r=roster();let patch;if(d.roster==='prod')patch={prod:Number(t.value)||0};else{const [k,tr]=d.roster.split('|');patch={[k]:{...r[k],[tr]:Number(t.value)||0}}}
       if(S.roster.length)await upd('roster',1,patch,'Roster updated');else await ins('roster',[{id:1,...r,...patch}],'Roster updated');return}
@@ -529,11 +590,14 @@ function wire(){
     try{
       if(e.target.id==='newForm')await createPack(f);
       else if(e.target.id==='addWo'){const p=packById(curPack),ref=f.get('ref');let row;
-        if(ref){const t=taskByRef(ref);row={no:rid('WO-',6),pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:(t.materials||[]).map(m=>({pn:m.pn,exp:m.qty,qty:0,stock:'Not checked',eta:null})),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}}
+        if(ref){const t=taskByRef(ref);row={no:rid('WO-',6),pack_id:p.id,ref,type:'OMP',title:t.title,hrs:t.hrs,flags:t.flags||{},added_v:p.version,parts:stdParts(t),tools:(t.tooling||[]).map(n=>({name:n,status:'Not checked',note:''}))}}
         else{const title=(f.get('title')||'').trim();if(!title){toast('Describe the ADF first');return}
           const hrs={};TRADES.forEach(t=>hrs[t]=Number(f.get('h'+t))||0);row={no:rid('WO-',6),pack_id:p.id,ref:null,type:'ADF',title:/^ADF/i.test(title)?title:'ADF: '+title,hrs,flags:{},added_v:p.version}}
         await ins('work_orders',[row],`Added ${row.no} (${row.title}) to v${p.version}`,p.id)}
-      else if(e.target.id==='addPart'){const no=f.get('wo'),w=woBy(no);const arr=[...(w.parts||[]),{pn:f.get('pn').trim(),exp:null,qty:Number(f.get('qty'))||1,stock:'Not checked',eta:null}];
+      else if(e.target.id==='extraForm'){const no=f.get('wo'),w=woBy(no),pn=f.get('pn').trim().toUpperCase(),qty=Number(f.get('qty'))||1,reason=f.get('reason').trim();
+        const arr=[...(w.parts||[]),{pn,exp:null,qty,stock:'Requested',eta:null,src:'extra',reason,by:role,actor:actor()||null,at:new Date().toISOString()}];
+        if(await upd('work_orders',no,{parts:arr},`Extra spares requested: ${qty} × ${pn} for ${w.title} — ${reason}`,w.pack_id)){xspPrefill=null;toast('Request sent to Materials')}}
+      else if(e.target.id==='addPart'){const no=f.get('wo'),w=woBy(no);const arr=[...(w.parts||[]),{pn:f.get('pn').trim().toUpperCase(),exp:null,qty:Number(f.get('qty'))||1,stock:'Requested',eta:null,src:'extra',reason:'Added by Materials',by:role,at:new Date().toISOString()}];
         await upd('work_orders',no,{parts:arr},`Added part ${f.get('pn').trim()} to ${no}`,w.pack_id)}
       else if(e.target.id==='escForm'){await ins('escapes',[{pack_id:f.get('pack')||null,ref:f.get('ref')||null,raised_by:f.get('by'),type:f.get('type'),detail:f.get('detail'),action:f.get('action')||''}],`Escape logged: ${f.get('type')}`,f.get('pack')||null);escPrefill=null;toast('Escape logged')}
       else if(e.target.id==='hoForm'){await ins('handover',[{level:f.get('level'),ref:f.get('ref'),issue:f.get('issue'),plan:f.get('plan')||'',role}],'Added to handover');toast('Added to handover')}
