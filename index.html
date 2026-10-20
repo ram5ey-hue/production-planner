@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Production Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="role-planner">
+<header>
+  <div class="wrap top">
+    <h1 id="appTitle">Production Planner</h1>
+    <div class="who">
+      <span class="live" id="live"><i></i><span>Connecting</span></span>
+      <label class="label">Working as
+        <select id="roleSel" aria-label="Stakeholder">
+          <option value="planner">Planner</option>
+          <option value="materials">Materials</option>
+          <option value="tooling">Tooling &amp; GSE</option>
+          <option value="shiftlead">Shift lead</option>
+          <option value="management">Management</option>
+        </select>
+      </label>
+      <input type="text" id="actor" placeholder="Your initials" maxlength="12" size="10" aria-label="Your initials">
+    </div>
+  </div>
+  <div class="wrap"><nav class="tabs" role="tablist" id="tabs"></nav></div>
+</header>
+<main><div class="wrap" id="view"><p class="sub">Loading…</p></div></main>
+<div class="toast" id="toast" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

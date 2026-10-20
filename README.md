@@ -1,0 +1,54 @@
+# Production Planner (demo)
+
+A shared, multi-stakeholder production planning demo for aircraft maintenance work packs. One app, five views, live data:
+
+| Stakeholder | What they do |
+|---|---|
+| **Planner** | Create work packs from the task database, accept / reject / G703 work orders, load new versions, track readiness, release to production, close out |
+| **Materials** | Set ordered quantity, stock status and ETA for every expected part; demand-cell freeze and stores collection sign-off |
+| **Tooling & GSE** | Mark tools and ground equipment available, booked, in calibration or U/S |
+| **Shift lead** | Assign work orders, update progress, record actual hours, raise escapes |
+| **Management** | Trends from closed work packs: completion rate, hours vs plan by trade, escapes, on-time inputs |
+
+Every change appears on every open screen within a second or two and is logged in the activity feed.
+
+**All data in this demo is invented.** Aircraft (A01–A04), task references, part numbers (`DEMO-…`) and figures are made up.
+
+## Stack
+
+- Static site: `index.html`, `styles.css`, `app.js`, `config.js` — no build step. Hosted on GitHub Pages.
+- Database and live updates: [Supabase](https://supabase.com) (Postgres + Realtime), via `@supabase/supabase-js` from jsDelivr.
+- Schema: `supabase/schema.sql`. Demo data: `supabase/seed.sql` (dates are relative to the day it's run).
+
+## Set up from scratch
+
+1. Create a Supabase project. In **SQL Editor**, run `supabase/schema.sql`, then `supabase/seed.sql`.
+2. In **Project Settings → API Keys**, copy the project URL and the **publishable** key into `config.js`. Never put a secret / service_role key in this repo.
+3. Push to GitHub and enable **Settings → Pages → Deploy from branch → main / root**.
+
+To reset the demo, run `supabase/seed.sql` again.
+
+## Links per stakeholder
+
+Add the role to the end of the address to open straight into that view:
+`…/#planner`, `…/#materials`, `…/#tooling`, `…/#shiftlead`, `…/#management`.
+
+## Security — read before using real data
+
+This demo uses open row-level-security policies (`demo_open`): **anyone with the link can read and change the data.** That's fine for invented demo data and not for anything real. Before real use:
+
+- switch on Supabase Auth (e.g. company SSO or email sign-in) and replace the `demo_open` policies with role-based ones;
+- get the hosting location and data handling approved by the organisation's IT and security teams.
+
+## Data model
+
+| Table | Holds |
+|---|---|
+| `tasks` | Industrialised OMP tasks: hours by trade, tooling, materials, flags |
+| `packs` | Work packs: aircraft, check type, dates, version, status, sign-off checks |
+| `work_orders` | One row per work order: decision, planner note, parts lines, tools lines, progress, actual hours |
+| `escapes` | Floor findings that should update the task database |
+| `handover` | Handover items at work pack, 145 and maintenance-plan level |
+| `history` | Closed work packs, used for Trends |
+| `roster` | Heads per trade (weekday / weekend) and productive hours per person |
+| `activity` | Change log shown in the activity feed |
